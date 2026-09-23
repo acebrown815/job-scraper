@@ -1,0 +1,27 @@
+# Copy to config.toml and edit.
+
+[scrape]
+# Any of: greenhouse, lever, ashby, bamboohr, workday, icims, paylocity
+# Scraping all seven takes hours (20k+ companies); greenhouse + lever + ashby is ~15 min.
+platforms = ["greenhouse", "lever", "ashby"]
+# max_companies_per_platform = 100   # uncomment for quick test runs
+
+[filters]
+# All filters are optional; leave a list empty to disable it.
+# Regexes, matched case-insensitively against the job title.
+title_include = ["engineer", "developer", "programmer"]
+title_exclude = ["intern\\b", "sales"]
+skill_levels = []            # any of: intern, entry, mid, senior
+countries = ["US"]           # ISO codes; remote jobs must name one of these, or no place at all
+remote_only = false
+exclude_recruiters = true
+max_age_days = 30            # by posted date, where the ATS provides one
+
+[sheets]
+# Apps Script web app deployment URL, ending in /exec   (or env JOB_SCRAPER_WEBAPP_URL)
+webapp_url = ""
+# Must equal the TOKEN script property in Apps Script  (or env JOB_SCRAPER_TOKEN)
+token = ""
+worksheet = "Jobs"           # tab name; created if missing
+prune_after_days = 30        # drop rows not seen in a scrape for this many days
+max_rows = 100000            # Sheets caps a spreadsheet at 10M cells
