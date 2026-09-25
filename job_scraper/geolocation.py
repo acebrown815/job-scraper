@@ -123,6 +123,22 @@ COUNTRY_ALIASES = {
     "gr": "GR", "grc": "GR", "greece": "GR",
     "ro": "RO", "rou": "RO", "romania": "RO",
     "ua": "UA", "ukr": "UA", "ukraine": "UA",
+    "hu": "HU", "hun": "HU", "hungary": "HU",
+    "bg": "BG", "bgr": "BG", "bulgaria": "BG",
+    "hr": "HR", "hrv": "HR", "croatia": "HR",
+    "rs": "RS", "srb": "RS", "serbia": "RS",
+    "sk": "SK", "svk": "SK", "slovakia": "SK",
+    "si": "SI", "svn": "SI", "slovenia": "SI",
+    "ee": "EE", "estonia": "EE",  # not "est": Eastern time
+    "lv": "LV", "lva": "LV", "latvia": "LV",
+    "lt": "LT", "ltu": "LT", "lithuania": "LT",
+    "lu": "LU", "lux": "LU", "luxembourg": "LU",
+    "cy": "CY", "cyp": "CY", "cyprus": "CY",
+    # "mt": "MT",  # collides with Montana
+    "mlt": "MT", "malta": "MT",
+    # "is": "IS",  # a common word
+    "isl": "IS", "iceland": "IS",
+    "polska": "PL", "espana": "ES", "turkiye": "TR", "czech": "CZ",
     # Asia / Pacific
     # "in": "IN",  # collides with Indiana
     "ind": "IN", "india": "IN",
@@ -356,7 +372,8 @@ FAMOUS_CITY_DEFAULTS = {
 
 
 _EUROPE = {"GB", "IE", "DE", "FR", "ES", "IT", "NL", "BE", "CH", "AT", "SE", "NO", "DK",
-           "FI", "PL", "PT", "CZ", "GR", "RO", "UA"}
+           "FI", "PL", "PT", "CZ", "GR", "RO", "UA", "HU", "BG", "HR", "RS", "SK", "SI",
+           "EE", "LV", "LT", "LU", "CY", "MT", "IS"}
 _LATAM = {"MX", "BR", "AR", "CL", "CO", "PE"}
 _APAC = {"IN", "CN", "JP", "KR", "SG", "MY", "PH", "ID", "TH", "VN", "HK", "TW", "AU", "NZ"}
 _MEA = {"IL", "AE", "SA", "TR", "ZA", "EG", "NG", "KE"}

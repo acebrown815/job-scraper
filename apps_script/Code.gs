@@ -1,9 +1,10 @@
 /**
  * job-scraper web app endpoint.
  *
- * A small, token-protected read/write API over one sheet tab. The Python side
- * (job_scraper/sheets.py) does the merging; this script only reads and writes
- * row ranges, so every call is safe to retry.
+ * A small, token-protected API over one sheet tab for incremental sync. The Python
+ * side (job_scraper/sheets.py) decides what changes; this script applies it. Rows are
+ * addressed by their `key` column, never by position, so manual edits (sorting,
+ * inserting, deleting rows) between calls are safe, and every call is safe to retry.
  *
  * Setup: see "Google Sheet setup" in the project README.
  *   Script Properties:
@@ -11,9 +12,12 @@
  *     SHEET_ID  (optional) spreadsheet id; omit when the script is bound to the sheet
  *
  * All requests are POST with a JSON body: {token, action, sheet, ...params}
- *   read      {offset, limit}      -> {rows, total_rows}
- *   write     {start_row, values}  -> {written}
- *   finalize  {total_rows}         -> {rows}   trims rows below total_rows, freezes header
+ *   read_columns  {columns, offset, limit} -> {header, total_rows, columns: {name: [values]}}
+ *   set_header    {header}                 -> {}       writes row 1, freezes it
+ *   insert_rows   {values}                 -> {inserted}  below the header; rows whose
+ *                                                        key already exists are skipped
+ *   delete_keys   {keys}                   -> {deleted}
+ *   trim          {max_rows}               -> {deleted}   drops data rows past max_rows
  */
 
 function doPost(e) {
@@ -27,14 +31,20 @@ function doPost(e) {
     lock.waitLock(30000);
     var sheet = getSheet_(req.sheet || 'Jobs');
     switch (req.action) {
-      case 'read':
-        result = read_(sheet, req.offset || 0, req.limit || 5000);
+      case 'read_columns':
+        result = readColumns_(sheet, req.columns || [], req.offset || 0, req.limit || 5000);
         break;
-      case 'write':
-        result = write_(sheet, req.start_row, req.values || []);
+      case 'set_header':
+        result = setHeader_(sheet, req.header);
         break;
-      case 'finalize':
-        result = finalize_(sheet, req.total_rows);
+      case 'insert_rows':
+        result = insertRows_(sheet, req.values || []);
+        break;
+      case 'delete_keys':
+        result = deleteKeys_(sheet, req.keys || []);
+        break;
+      case 'trim':
+        result = trim_(sheet, req.max_rows);
         break;
       default:
         throw new Error('unknown action: ' + req.action);
@@ -64,45 +74,115 @@ function getSheet_(name) {
   return ss.getSheetByName(name) || ss.insertSheet(name);
 }
 
-function read_(sheet, offset, limit) {
-  var lastRow = sheet.getLastRow();
+function header_(sheet) {
   var lastCol = sheet.getLastColumn();
-  if (offset >= lastRow || lastCol === 0) return { rows: [], total_rows: lastRow };
-
-  var n = Math.min(limit, lastRow - offset);
-  var tz = sheet.getParent().getSpreadsheetTimeZone();
-  var rows = sheet.getRange(offset + 1, 1, n, lastCol).getValues().map(function (row) {
-    return row.map(function (v) {
-      // Date cells go back as yyyy-MM-dd so Python can compare them as strings.
-      return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : v;
-    });
-  });
-  return { rows: rows, total_rows: lastRow };
+  return lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(String) : [];
 }
 
-function write_(sheet, startRow, values) {
-  if (!values.length) return { written: 0 };
-  var width = values[0].length;
-  var needRows = startRow + values.length - 1;
+function colIndex_(header, name) {
+  var i = header.indexOf(name);
+  if (i < 0) throw new Error('column not found: ' + name);
+  return i;
+}
 
-  if (sheet.getMaxRows() < needRows) {
-    sheet.insertRowsAfter(sheet.getMaxRows(), needRows - sheet.getMaxRows());
+/** Values of one column for all data rows (row 2 .. last row). */
+function columnValues_(sheet, col) {
+  var n = sheet.getLastRow() - 1;
+  if (n <= 0) return [];
+  return sheet.getRange(2, col + 1, n, 1).getValues().map(function (r) { return String(r[0]); });
+}
+
+function formatCell_(v, tz) {
+  // Date cells go back as yyyy-MM-dd so Python can compare them as strings.
+  return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : v;
+}
+
+function readColumns_(sheet, names, offset, limit) {
+  var header = header_(sheet);
+  var dataRows = Math.max(sheet.getLastRow() - 1, 0);
+  var out = { header: header, total_rows: dataRows, columns: {} };
+  var n = Math.min(limit, dataRows - offset);
+  var tz = sheet.getParent().getSpreadsheetTimeZone();
+  names.forEach(function (name) {
+    var col = header.indexOf(name);
+    if (col < 0 || n <= 0) {
+      out.columns[name] = [];
+      return;
+    }
+    out.columns[name] = sheet.getRange(offset + 2, col + 1, n, 1).getValues()
+      .map(function (r) { return formatCell_(r[0], tz); });
+  });
+  return out;
+}
+
+function setHeader_(sheet, header) {
+  if (sheet.getMaxColumns() < header.length) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), header.length - sheet.getMaxColumns());
   }
+  sheet.getRange(1, 1, 1, header.length).setValues([header]);
+  sheet.setFrozenRows(1);
+  return {};
+}
+
+function insertRows_(sheet, values) {
+  var keyCol = colIndex_(header_(sheet), 'key');
+  var existing = {};
+  columnValues_(sheet, keyCol).forEach(function (k) { existing[k] = true; });
+  // A retried request finds its rows already present and inserts nothing.
+  var fresh = values.filter(function (row) {
+    var k = String(row[keyCol]).replace(/^'/, '');
+    if (existing[k]) return false;
+    existing[k] = true;
+    return true;
+  });
+  if (!fresh.length) return { inserted: 0 };
+
+  var width = fresh[0].length;
   if (sheet.getMaxColumns() < width) {
     sheet.insertColumnsAfter(sheet.getMaxColumns(), width - sheet.getMaxColumns());
   }
-  sheet.getRange(startRow, 1, values.length, width).setValues(values);
-  return { written: values.length };
+  sheet.insertRowsAfter(1, fresh.length);
+  sheet.getRange(2, 1, fresh.length, width).setValues(fresh);
+  return { inserted: fresh.length };
 }
 
-function finalize_(sheet, totalRows) {
-  // Keep at least one row below the frozen header; Sheets refuses to delete all of them.
-  var keep = Math.max(totalRows, 2);
-  var maxRows = sheet.getMaxRows();
-  if (maxRows > keep) sheet.deleteRows(keep + 1, maxRows - keep);
-  if (totalRows < keep) {
-    sheet.getRange(totalRows + 1, 1, keep - totalRows, sheet.getMaxColumns()).clearContent();
+function deleteKeys_(sheet, keys) {
+  var keyCol = colIndex_(header_(sheet), 'key');
+  var wanted = {};
+  keys.forEach(function (k) { wanted[k] = true; });
+  var rows = [];  // 1-based sheet row numbers, ascending
+  columnValues_(sheet, keyCol).forEach(function (k, i) {
+    if (wanted[k]) rows.push(i + 2);
+  });
+  deleteRowNumbers_(sheet, rows);
+  return { deleted: rows.length };
+}
+
+function trim_(sheet, maxRows) {
+  var dataRows = sheet.getLastRow() - 1;
+  if (!maxRows || dataRows <= maxRows) return { deleted: 0 };
+  // New rows go in at the top, so the bottom rows are the oldest.
+  sheet.deleteRows(maxRows + 2, dataRows - maxRows);
+  return { deleted: dataRows - maxRows };
+}
+
+/** Delete rows bottom-up, one call per contiguous run. */
+function deleteRowNumbers_(sheet, rows) {
+  var i = rows.length - 1;
+  while (i >= 0) {
+    var end = rows[i];
+    var start = end;
+    while (i > 0 && rows[i - 1] === start - 1) {
+      i--;
+      start--;
+    }
+    // Sheets refuses to delete every non-frozen row; clear the last one instead.
+    if (start === 2 && end >= sheet.getMaxRows()) {
+      if (end > start) sheet.deleteRows(start + 1, end - start);
+      sheet.getRange(2, 1, 1, sheet.getMaxColumns()).clearContent();
+    } else {
+      sheet.deleteRows(start, end - start + 1);
+    }
+    i--;
   }
-  sheet.setFrozenRows(1);
-  return { rows: totalRows };
 }

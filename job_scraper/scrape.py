@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 from .fetchers import FETCHERS, MAX_WORKERS, load_paylocity
-from .geolocation import location_places
+from .geolocation import REGION_COUNTRIES, location_places
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(PACKAGE_DIR)
@@ -170,11 +170,21 @@ def _parse_date(value):
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _in_countries(job, countries):
+def expand_countries(names):
+    """ISO codes and region names ("EU", "Europe", "North America") -> set of ISO codes."""
+    codes = set()
+    for name in names:
+        region = REGION_COUNTRIES.get(name.strip().lower())
+        codes |= region if region else {name.strip().upper()}
+    return codes
+
+
+def _in_countries(job, countries, keep_unplaced=True):
     """Country filter. On-site jobs need a parsed country in the list. Remote jobs pass
     if their location names an allowed country or region (e.g. "Remote, US", "North
-    America"), or names no place at all ("Remote", "Anywhere"). Remote jobs tied to other
-    countries ("Remote - LATAM", "Brazil") or to unrecognized places are dropped."""
+    America"), or names no place at all ("Remote", "Anywhere") when ``keep_unplaced``.
+    Remote jobs tied to other countries ("Remote - LATAM", "Brazil") or to unrecognized
+    places are dropped."""
     if job.get("country"):
         return job["country"] in countries
     if not job.get("remote"):
@@ -182,7 +192,7 @@ def _in_countries(job, countries):
     codes, unknown = location_places(job.get("location"))
     if codes:
         return bool(codes & countries)
-    return not unknown
+    return keep_unplaced and not unknown
 
 
 def apply_filters(jobs, filters):
@@ -190,7 +200,8 @@ def apply_filters(jobs, filters):
     include = [re.compile(p, re.I) for p in filters.get("title_include", [])]
     exclude = [re.compile(p, re.I) for p in filters.get("title_exclude", [])]
     levels = set(filters.get("skill_levels", []))
-    countries = {c.upper() for c in filters.get("countries", [])}
+    countries = expand_countries(filters.get("countries", []))
+    keep_unplaced = filters.get("keep_unplaced_remote", True)
     remote_only = filters.get("remote_only", False)
     exclude_recruiters = filters.get("exclude_recruiters", False)
     max_age_days = filters.get("max_age_days")
@@ -209,7 +220,7 @@ def apply_filters(jobs, filters):
             continue
         if remote_only and not job.get("remote"):
             continue
-        if countries and not _in_countries(job, countries):
+        if countries and not _in_countries(job, countries, keep_unplaced):
             continue
         if exclude_recruiters and job.get("is_recruiter"):
             continue
@@ -253,16 +264,31 @@ def dedupe(jobs):
     return list(seen.values())
 
 
+COMPANY_SUFFIXES = re.compile(
+    r"\b(inc|llc|ltd|limited|corp|corporation|co|gmbh|hq|careers|jobs)\b")
+
+
+def job_identity(company, title):
+    """Company + title, normalized, so the same opening matches across job boards and
+    reposts: "Agile-Defense" / "agiledefense", "Senior Engineer (Remote)" / "senior engineer"."""
+    company = (company or "").lower()
+    company = COMPANY_SUFFIXES.sub(" ", re.sub(r"[-_.]", " ", company))
+    company = re.sub(r"[^a-z0-9]", "", company)
+    title = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", (title or "").lower())
+    title = re.sub(r"\b(remote|hybrid)\b", " ", title)
+    title = " ".join(re.sub(r"[^a-z0-9+#]+", " ", title).split())
+    return f"{company}|{title}"
+
+
 def _repost_ident(job):
-    company = (job.get("company_slug") or job.get("company") or "").lower().strip()
-    title = " ".join((job.get("title") or "").lower().split())
-    return company, title, bool(job.get("remote"))
+    return job_identity(job.get("company") or job.get("company_slug"), job.get("title"))
 
 
 def collapse_reposts(jobs):
-    """Keep one job per company + title + remote. Companies often post the same opening
-    once per location, each with its own URL. Run this after filtering so the survivor
-    is one that matched. The smallest key wins, so the same row survives across runs."""
+    """Keep one job per company + title (see job_identity). Companies often post the same
+    opening once per location or on more than one board, each with its own URL. Run this
+    after filtering so the survivor is one that matched. The smallest key wins, so the
+    same row survives across runs."""
     best = {}
     for job in jobs:
         ident = _repost_ident(job)
