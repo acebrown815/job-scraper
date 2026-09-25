@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from job_scraper.geolocation import parse_job_location
-from job_scraper.scrape import _in_countries, collapse_reposts
+from job_scraper.scrape import _in_countries, collapse_reposts, expand_countries
 
 US = {"US"}
 
@@ -31,6 +31,16 @@ def test_remote_non_us_locations_dropped():
                 "IN Remote India", "Bangalore, IN ; Pune, IN; Remote", "Remote (Non-U.S.)",
                 "CA Remote Ontario", "Sydney"]:
         assert not _in_countries(remote_job(loc), US), loc
+
+
+def test_eu_tab():
+    eu = expand_countries(["EU"])
+    for loc in ["Remote - Europe", "EU only (remote)", "Germany", "Remote, Poland", "Remote - EMEA",
+                "Remote (Estonia)", "Polska (praca zdalna)", "Remote (U.S. or Europe)", "Remote"]:
+        assert _in_countries(remote_job(loc), eu), loc
+    for loc in ["Remote (US)", "Remote - LATAM", "Brazil", "Remote - EST", "India (Remote)"]:
+        assert not _in_countries(remote_job(loc), eu), loc
+    assert not _in_countries(remote_job("Remote"), eu, keep_unplaced=False)
 
 
 def test_remote_parse_keeps_single_country():

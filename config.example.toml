@@ -12,7 +12,8 @@ platforms = ["greenhouse", "lever", "ashby"]
 title_include = ["engineer", "developer", "programmer"]
 title_exclude = ["intern\\b", "sales"]
 skill_levels = []            # any of: intern, entry, mid, senior
-countries = ["US"]           # ISO codes; remote jobs must name one of these, or no place at all
+countries = ["US"]           # ISO codes or regions ("EU", "North America"); remote jobs must
+                             # name one of these, or no place at all. Tabs can override.
 remote_only = false
 exclude_recruiters = true
 max_age_days = 30            # by posted date, where the ATS provides one
@@ -22,6 +23,22 @@ max_age_days = 30            # by posted date, where the ATS provides one
 webapp_url = ""
 # Must equal the TOKEN script property in Apps Script  (or env JOB_SCRAPER_TOKEN)
 token = ""
-worksheet = "Jobs"           # tab name; created if missing
+worksheet = "Jobs"           # tab name when no [[sheets.tabs]] are set; created if missing
 prune_after_days = 30        # drop rows not seen in a scrape for this many days
 max_rows = 100000            # Sheets caps a spreadsheet at 10M cells
+
+# One tab per job set. Each tab can override any [filters] key (and prune_after_days /
+# max_rows). The scrape runs once; each tab is filtered and synced separately.
+# Remove these to write a single tab named by [sheets].worksheet.
+[[sheets.tabs]]
+worksheet = "US Remote"
+countries = ["US"]
+remote_only = true
+
+[[sheets.tabs]]
+worksheet = "EU Remote"
+countries = ["EU"]
+remote_only = true
+# Plain "Remote"/"Anywhere" jobs (no place named) go to every tab by default; most
+# come from US companies. Set false to keep only jobs that name a European place.
+keep_unplaced_remote = true

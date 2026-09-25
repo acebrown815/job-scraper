@@ -1,4 +1,4 @@
-"""Offline tests for the sheet merge logic. Run: python -m pytest tests  (or python tests/test_sheets.py)"""
+"""Offline tests for the sheet sync planner and filters. Run: python -m pytest tests  (or python tests/test_sheets.py)"""
 
 import sys
 from datetime import date
@@ -6,8 +6,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from job_scraper.scrape import apply_filters
-from job_scraper.sheets import COLUMNS, merge_rows
+from job_scraper.scrape import apply_filters, job_identity
+from job_scraper.sheets import COLUMNS, plan_sync
 
 TODAY = date(2026, 9, 22)
 
@@ -16,53 +16,65 @@ def job(key, title="Software Engineer", company="acme", **kw):
     return {"key": key, "title": title, "company": company, "url": key, "ats": "Lever", **kw}
 
 
-def as_dicts(values):
-    header = values[0]
-    return {r[header.index("key")]: dict(zip(header, r)) for r in values[1:]}
+def as_dicts(header, rows):
+    return {r[header.index("key")]: dict(zip(header, r)) for r in rows}
 
 
 def test_empty_sheet_gets_header_and_rows():
-    values = merge_rows([], [job("a"), job("b")], today=TODAY)
-    assert values[0] == COLUMNS
-    rows = as_dicts(values)
+    plan = plan_sync([], [], [], [job("a"), job("b", "Backend Engineer")], today=TODAY)
+    assert plan["header"] == COLUMNS
+    rows = as_dicts(COLUMNS, plan["new_rows"])
     assert set(rows) == {"a", "b"}
-    assert rows["a"]["first_seen"] == rows["a"]["last_seen"] == "2026-09-22"
+    assert rows["a"]["first_seen"] == "2026-09-22"
+    assert plan["prune"] == []
 
 
-def test_existing_row_keeps_first_seen_and_user_columns():
+def test_only_new_jobs_inserted_existing_left_alone():
     header = ["status", *COLUMNS, "notes"]
-    old = {c: "" for c in header}
-    old.update(key="a", title="Old title", first_seen="2026-09-01", last_seen="2026-09-10",
-               status="applied", notes="talked to recruiter")
-    existing = [header, [old[c] for c in header]]
-
-    values = merge_rows(existing, [job("a", title="New title")], today=TODAY)
-    assert values[0] == header  # user column positions untouched
-    row = as_dicts(values)["a"]
-    assert row["title"] == "New title"
-    assert row["first_seen"] == "2026-09-01"
-    assert row["last_seen"] == "2026-09-22"
-    assert row["status"] == "applied" and row["notes"] == "talked to recruiter"
+    plan = plan_sync(header, ["a", "old"], ["2026-09-21", "2026-09-20"],
+                     [job("a", title="New title"), job("b"), job("b")], today=TODAY)
+    assert plan["header"] is None  # user column positions untouched
+    rows = as_dicts(header, plan["new_rows"])
+    assert set(rows) == {"b"}  # "a" already exists; duplicate "b" inserted once
+    assert rows["b"]["status"] == "" and len(plan["new_rows"][0]) == len(header)
+    assert set(plan) == {"header", "new_rows", "prune"}  # nothing updates existing rows
 
 
-def test_stale_rows_pruned_and_blank_rows_ignored():
-    header = COLUMNS
-    stale = ["" for _ in header]
-    stale[header.index("key")] = "old"
-    stale[header.index("last_seen")] = "2026-08-01"
-    blank = ["" for _ in header]
-    values = merge_rows([header, stale, blank], [job("new")], today=TODAY, prune_after_days=30)
-    assert set(as_dicts(values)) == {"new"}
+def test_same_company_and_title_not_added_twice():
+    # Existing row came from Lever; the same opening shows up on Greenhouse with a new
+    # URL, plus two reposts of another job within this scrape.
+    plan = plan_sync(COLUMNS, ["lever-url"], ["2026-09-21"], [
+        job("gh-url", "Senior Engineer (Remote)", company="agiledefense"),
+        job("x1", "Data Engineer", company="Acme Inc"),
+        job("x2", "Data Engineer - Remote", company="acme"),
+    ], today=TODAY, companies=["agile-defense"], titles=["Senior Engineer"])
+    assert [r[COLUMNS.index("key")] for r in plan["new_rows"]] == ["x1"]
 
 
-def test_max_rows_keeps_newest():
-    header = COLUMNS
-    older = ["" for _ in header]
-    older[header.index("key")] = "older"
-    older[header.index("first_seen")] = "2026-09-01"
-    older[header.index("last_seen")] = "2026-09-21"
-    values = merge_rows([header, older], [job("fresh")], today=TODAY, max_rows=1)
-    assert set(as_dicts(values)) == {"fresh"}
+def test_job_identity():
+    assert job_identity("Agile-Defense", "Senior Engineer (Remote)") == \
+        job_identity("agiledefense", "senior  engineer")
+    assert job_identity("Acme, Inc.", "Engineer [US]") == job_identity("acme", "Engineer")
+    assert job_identity("remotely", "Remoteness Lead") == "remotely|remoteness lead"
+    assert job_identity("acme", "Engineer I") != job_identity("acme", "Engineer II")
+
+
+def test_missing_columns_appended_to_header():
+    plan = plan_sync(["key", "notes"], [], [], [], today=TODAY)
+    assert plan["header"] == ["key", "notes", *COLUMNS[1:]]
+
+
+def test_rows_pruned_by_age_even_if_scraped_again():
+    plan = plan_sync(COLUMNS, ["old", "", "nodate", "seen", "recent"],
+                     ["2026-08-01", "2026-08-01", "", "2026-08-01", "2026-09-01"],
+                     [job("seen")], today=TODAY, prune_after_days=30)
+    assert plan["prune"] == ["old", "seen"]
+    assert plan["new_rows"] == []
+
+
+def test_prune_disabled():
+    plan = plan_sync(COLUMNS, ["old"], ["2020-01-01"], [], today=TODAY, prune_after_days=0)
+    assert plan["prune"] == []
 
 
 def test_filters():

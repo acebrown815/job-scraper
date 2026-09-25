@@ -2,12 +2,13 @@
 
     python -m job_scraper                         # uses ./config.toml
     python -m job_scraper --platforms greenhouse lever --max-companies 50
-    python -m job_scraper --dry-run               # skip the sheet, write output/jobs.json
+    python -m job_scraper --dry-run               # skip the sheet, write output/<tab>.json
 """
 
 import argparse
 import json
 import os
+import re
 import time
 import tomllib
 
@@ -34,7 +35,7 @@ def main():
     parser.add_argument("--max-companies", type=int,
                         help="Only check the first N companies per platform (for testing)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Don't touch Google Sheets; just write output/jobs.json")
+                        help="Don't touch Google Sheets; just write output/<tab>.json")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -50,28 +51,52 @@ def main():
 
     jobs = clean_job_data(jobs)
     jobs = dedupe(jobs)
-    jobs = apply_filters(jobs, config.get("filters", {}))
-    jobs = collapse_reposts(jobs)
-    enrich_salary(jobs)
 
     output_dir = os.path.join(ROOT_DIR, "output")
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, "jobs.json")
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(jobs, f, ensure_ascii=False, indent=1)
-    print(f"Saved {len(jobs):,} jobs to {output_file}")
+    base_filters = config.get("filters", {})
 
-    if args.dry_run:
-        return
+    for tab in get_tabs(sheets_cfg):
+        worksheet = tab["worksheet"]
+        print(f"--- {worksheet} ---")
+        # Each tab's filter keys override [filters]; the rest of the tab is sheet options.
+        tab_filters = {k: v for k, v in tab.items() if k not in TAB_SHEET_KEYS}
+        tab_jobs = collapse_reposts(apply_filters(jobs, {**base_filters, **tab_filters}))
+        enrich_salary(tab_jobs)
 
-    sync_to_sheet(
-        jobs,
-        webapp_url=os.environ.get("JOB_SCRAPER_WEBAPP_URL") or sheets_cfg.get("webapp_url"),
-        token=os.environ.get("JOB_SCRAPER_TOKEN") or sheets_cfg.get("token"),
-        worksheet=sheets_cfg.get("worksheet", "Jobs"),
-        prune_after_days=sheets_cfg.get("prune_after_days", 30),
-        max_rows=sheets_cfg.get("max_rows", 100_000),
-    )
+        output_file = os.path.join(output_dir, f"{_slug(worksheet)}.json")
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(tab_jobs, f, ensure_ascii=False, indent=1)
+        print(f"Saved {len(tab_jobs):,} jobs to {output_file}")
+
+        if args.dry_run:
+            continue
+
+        sync_to_sheet(
+            tab_jobs,
+            webapp_url=os.environ.get("JOB_SCRAPER_WEBAPP_URL") or sheets_cfg.get("webapp_url"),
+            token=os.environ.get("JOB_SCRAPER_TOKEN") or sheets_cfg.get("token"),
+            worksheet=worksheet,
+            prune_after_days=tab.get("prune_after_days", sheets_cfg.get("prune_after_days", 30)),
+            max_rows=tab.get("max_rows", sheets_cfg.get("max_rows", 100_000)),
+        )
+
+
+# Keys in a [[sheets.tabs]] entry that configure the sheet rather than filter jobs.
+TAB_SHEET_KEYS = {"worksheet", "prune_after_days", "max_rows"}
+
+
+def get_tabs(sheets_cfg):
+    """[[sheets.tabs]] entries, or a single tab from [sheets].worksheet when none are set."""
+    tabs = sheets_cfg.get("tabs") or [{"worksheet": sheets_cfg.get("worksheet", "Jobs")}]
+    names = [t.get("worksheet") for t in tabs]
+    if not all(names) or len(set(names)) != len(names):
+        raise SystemExit("Each [[sheets.tabs]] entry needs a unique worksheet name.")
+    return tabs
+
+
+def _slug(name):
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "jobs"
 
 
 if __name__ == "__main__":

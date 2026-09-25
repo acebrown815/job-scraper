@@ -51,29 +51,34 @@ python tests/test_sheets.py                             # offline tests
 ## How the sheet is maintained
 
 Each row is keyed on the `key` column (the job URL, or a stable id for
-Workday/Paylocity). On every run:
+Workday/Paylocity). Syncs are incremental. On every run:
 
-- new jobs are added with `first_seen` = today; rows are sorted newest first
-- jobs seen again have their fields refreshed and `last_seen` = today
-- rows not seen for `prune_after_days` are removed
-- **extra columns you add yourself (e.g. `status`, `notes`) are preserved**
-  and stay attached to their job
+- only jobs not in the sheet yet are added, at the top, with `first_seen` = today.
+  A job counts as already there if its `key` **or its company + title** matches a row
+  (case, punctuation, "Inc"/"LLC", and "(Remote)"-style suffixes are ignored), so
+  reposts and the same job on another job board aren't added twice
+- jobs already in the sheet are left alone, even if they're scraped again
+- rows are removed `prune_after_days` after their `first_seen` date (`0` keeps them
+  forever)
+- **extra columns you add yourself (e.g. `status`, `notes`) are never touched**,
+  and you can sort, insert or delete rows freely between runs
 
-The web app only reads and writes row ranges; the merge happens in Python
-([sheets.py](job_scraper/sheets.py)), so every request is safe to retry. Rows are
-overwritten in place (never cleared first), then the sheet is trimmed. Text is written
-with a leading `'`, so a title like `=HYPERLINK(...)` stays text and is never evaluated.
-Dates (`first_seen`, `last_seen`, `posted_at`) are real date cells.
+The sync reads just the `key` and `first_seen` columns, decides what to change in Python
+([sheets.py](job_scraper/sheets.py)), and sends only those changes to the web app. The
+web app finds rows by `key`, never by position, and skips inserting keys that already
+exist, so every request is safe to retry. Text is written with a leading `'`, so a
+title like `=HYPERLINK(...)` stays text and is never evaluated. Dates (`first_seen`,
+`posted_at`) are real date cells.
 
 Apps Script limits: each request must finish in 6 minutes. The client reads 5,000 rows
-and writes 2,000 rows per request, well under that.
+and inserts 2,000 rows per request, well under that.
 
 ## Size limits
 
 The full scrape is 1M+ jobs from 20k+ companies and takes hours. A spreadsheet
 holds at most 10M cells, so use `[filters]` to narrow the scrape to what you need.
-`max_rows` (default 100k) is a hard cap: if it's exceeded, the oldest rows are
-dropped, including any notes on them.
+`max_rows` (default 100k) is a hard cap: if it's exceeded, the bottom (oldest) rows
+are dropped, including any notes on them.
 
 ## Layout
 
@@ -81,7 +86,7 @@ dropped, including any notes on them.
 job_scraper/
   fetchers.py     one fetcher per ATS + skill-level / recruiter classification
   scrape.py       company loading, parallel fetch, dead-slug cache, clean, filter, salary
-  sheets.py       merge logic + client for the Apps Script web app
+  sheets.py       incremental sync + client for the Apps Script web app
   geolocation.py  location parsing (used for remote + country)
   __main__.py     CLI
 apps_script/      Code.gs, the web app to paste into Apps Script

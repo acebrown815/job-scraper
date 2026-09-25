@@ -1,12 +1,14 @@
-"""Upsert scraped jobs into a Google Sheet through an Apps Script web app.
+"""Incrementally sync scraped jobs into a Google Sheet through an Apps Script web app.
 
-The web app (apps_script/Code.gs) only reads and writes row ranges; the merge
-happens here. Rows are keyed on the ``key`` column (see scrape.get_dedup_key).
-On each sync:
-  * new jobs are added with first_seen = today
-  * jobs seen again get their scraped fields refreshed and last_seen = today
-  * rows not seen for ``prune_after_days`` are removed
-  * any extra columns you add by hand (status, notes, ...) are preserved per row
+The web app (apps_script/Code.gs) applies changes addressed by the ``key`` column
+(see scrape.get_dedup_key); what to change is decided here. On each sync:
+  * only jobs not in the sheet yet are added, at the top, first_seen = today. A job is
+    already there if its key or its company + title (scrape.job_identity) matches a row,
+    so reposts and the same job on another board aren't added twice
+  * jobs already in the sheet are left alone, even if scraped again
+  * rows are removed ``prune_after_days`` after their first_seen date
+  * the sheet is capped at ``max_rows`` by dropping the oldest (bottom) rows
+Columns you add by hand (status, notes, ...) are never touched.
 """
 
 import re
@@ -15,14 +17,17 @@ from datetime import date, timedelta
 
 import requests
 
+from .scrape import job_identity
+
 # Columns this tool owns. Anything else in the header row is user data and is kept as-is.
 COLUMNS = [
     "key", "title", "company", "location", "country", "remote", "skill_level",
-    "salary", "ats", "is_recruiter", "posted_at", "first_seen", "last_seen", "url",
+    "salary", "ats", "is_recruiter", "posted_at", "first_seen", "url",
 ]
 
 READ_CHUNK_ROWS = 5_000
 WRITE_CHUNK_ROWS = 2_000
+KEY_CHUNK = 20_000
 
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -44,73 +49,58 @@ def _job_to_fields(job):
     }
 
 
-def merge_rows(existing_values, jobs, today=None, prune_after_days=30, max_rows=None):
-    """Pure merge of the current sheet contents with freshly scraped jobs.
+def plan_sync(header, keys, first_seen, jobs, today=None, prune_after_days=30,
+              companies=(), titles=()):
+    """Pure sync planner.
 
-    existing_values: list of rows as read from the sheet (first row = header).
-    Returns the full new sheet contents (header + rows) as a list of lists.
+    header: current header row ([] for an empty sheet).
+    keys / first_seen / companies / titles: those sheet columns, row-aligned.
+    Returns a dict with:
+      header     the header to write, or None if unchanged (our missing columns appended)
+      new_rows   rows to insert (jobs whose key isn't in the sheet), aligned with the header
+      prune      keys of rows added more than prune_after_days ago
     """
     today = today or date.today()
     today_s = today.isoformat()
 
-    # Keep the existing header (including user columns and their positions, even
-    # unnamed ones), then append any of our columns that are missing.
-    header = list(existing_values[0]) if existing_values else []
+    full_header = list(header)
     for col in COLUMNS:
-        if col not in header:
-            header.append(col)
-    idx = {col: header.index(col) for col in COLUMNS}
-    width = len(header)
+        if col not in full_header:
+            full_header.append(col)
+    idx = {col: full_header.index(col) for col in COLUMNS}
 
-    def cell(row, col):
-        return row[idx[col]]
+    existing = {str(k): str(fs or "") for k, fs in zip(keys, first_seen) if k}
 
-    rows = {}  # key -> row (list aligned with header); dict preserves first-seen order
-    for raw in existing_values[1:] if existing_values else []:
-        row = (list(raw) + [""] * width)[:width]
-        key = cell(row, "key")
-        if key:
-            rows[key] = row
-
-    added = updated = 0
+    known = {job_identity(c, t) for c, t in zip(companies, titles) if c or t}
+    new_jobs = {}
     for job in jobs:
-        fields = _job_to_fields(job)
-        row = rows.get(fields["key"])
-        if row is None:
-            row = [""] * width
-            row[idx["first_seen"]] = today_s
-            rows[fields["key"]] = row
-            added += 1
-        else:
-            updated += 1
-        for col, value in fields.items():
-            row[idx[col]] = value
-        row[idx["last_seen"]] = today_s
+        ident = job_identity(job.get("company"), job.get("title"))
+        if job["key"] not in existing and ident not in known:
+            known.add(ident)
+            new_jobs[job["key"]] = job
 
-    pruned = 0
+    new_rows = []
+    for job in sorted(new_jobs.values(), key=lambda j: ((j.get("company") or "").lower(),
+                                                        (j.get("title") or "").lower())):
+        row = [""] * len(full_header)
+        for col, value in _job_to_fields(job).items():
+            row[idx[col]] = value
+        row[idx["first_seen"]] = today_s
+        new_rows.append(row)
+
+    prune = []
     if prune_after_days:
         cutoff = (today - timedelta(days=prune_after_days)).isoformat()
-        for key in list(rows):
-            last_seen = str(cell(rows[key], "last_seen") or "")
-            # ISO dates compare correctly as strings; rows without a date are kept.
-            if last_seen and last_seen[:10] < cutoff:
-                del rows[key]
-                pruned += 1
+        # ISO dates compare correctly as strings; rows without a date are kept.
+        prune = [k for k, fs in existing.items() if fs and fs[:10] < cutoff]
 
-    ordered = list(rows.values())
-    # Newest first, then company/title for a stable, readable order.
-    ordered.sort(key=lambda r: (str(cell(r, "company")).lower(), str(cell(r, "title")).lower()))
-    ordered.sort(key=lambda r: str(cell(r, "first_seen")), reverse=True)
-
-    capped = 0
-    if max_rows and len(ordered) > max_rows:
-        capped = len(ordered) - max_rows
-        ordered = ordered[:max_rows]
-
-    print(f"Sheet merge: {added:,} new, {updated:,} refreshed, {pruned:,} pruned, "
-          f"{capped:,} dropped by max_rows -> {len(ordered):,} rows")
-
-    return [header] + ordered
+    print(f"Sheet sync: {len(new_rows):,} new, {len(existing):,} already in sheet, "
+          f"{len(prune):,} to prune")
+    return {
+        "header": full_header if full_header != list(header) else None,
+        "new_rows": new_rows,
+        "prune": prune,
+    }
 
 
 class WebAppClient:
@@ -167,31 +157,52 @@ def _to_cell(value):
     return value
 
 
-def read_sheet(client):
-    rows, offset = [], 0
+def _chunks(items, size):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def read_columns(client, columns):
+    """Read the header and the given columns for every data row."""
+    header, values, offset = [], {c: [] for c in columns}, 0
     while True:
-        data = client.call("read", offset=offset, limit=READ_CHUNK_ROWS)
-        if "rows" not in data or "total_rows" not in data:
+        data = client.call("read_columns", columns=columns, offset=offset, limit=READ_CHUNK_ROWS)
+        if "columns" not in data or "total_rows" not in data:
             raise RuntimeError(f"Web app read returned an unexpected response: {data!r}; "
                                "is the deployment running the current apps_script/Code.gs?")
-        rows.extend(data["rows"])
-        offset += len(data["rows"])
-        if not data["rows"] or offset >= data["total_rows"]:
-            return rows
+        header = data["header"]
+        got = len(data["columns"][columns[0]])
+        for c in columns:
+            values[c].extend(data["columns"][c])
+        offset += got
+        if not got or offset >= data["total_rows"]:
+            return header, values
 
 
 def sync_to_sheet(jobs, webapp_url, token, worksheet="Jobs",
                   prune_after_days=30, max_rows=None):
     client = WebAppClient(webapp_url, token, worksheet)
 
-    existing = read_sheet(client)
-    print(f"Read {max(len(existing) - 1, 0):,} existing rows from '{worksheet}'")
-    values = merge_rows(existing, jobs, prune_after_days=prune_after_days, max_rows=max_rows)
-    values = [[_to_cell(v) for v in row] for row in values]
+    header, cols = read_columns(client, ["key", "first_seen", "company", "title"])
+    print(f"Read {len(cols['key']):,} existing rows from '{worksheet}'")
+    plan = plan_sync(header, cols["key"], cols["first_seen"], jobs,
+                     prune_after_days=prune_after_days,
+                     companies=cols["company"], titles=cols["title"])
 
-    # Overwrite in place, then trim: the sheet is never left empty mid-sync.
-    for start in range(0, len(values), WRITE_CHUNK_ROWS):
-        client.call("write", start_row=start + 1, values=values[start:start + WRITE_CHUNK_ROWS])
-    client.call("finalize", total_rows=len(values))
+    if plan["header"]:
+        client.call("set_header", header=plan["header"])
 
-    print(f"Wrote {len(values) - 1:,} jobs to worksheet '{worksheet}'")
+    rows = [[_to_cell(v) for v in row] for row in plan["new_rows"]]
+    # Each chunk goes in at the top, so send the last chunk first to keep the order.
+    inserted = 0
+    for chunk in reversed(list(_chunks(rows, WRITE_CHUNK_ROWS))):
+        inserted += client.call("insert_rows", values=chunk)["inserted"]
+
+    deleted = 0
+    for chunk in _chunks(plan["prune"], KEY_CHUNK):
+        deleted += client.call("delete_keys", keys=chunk)["deleted"]
+    if max_rows:
+        deleted += client.call("trim", max_rows=max_rows)["deleted"]
+
+    print(f"Sheet '{worksheet}': added {inserted:,}, "
+          f"removed {deleted:,}")
