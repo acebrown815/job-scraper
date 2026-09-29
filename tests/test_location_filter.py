@@ -2,12 +2,14 @@
 Run: python -m pytest tests"""
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from job_scraper.geolocation import parse_job_location
-from job_scraper.scrape import _in_countries, collapse_reposts, expand_countries
+from job_scraper.scrape import _in_countries, expand_countries
+from job_scraper.stream import Streamer, Tab
 
 US = {"US"}
 
@@ -49,13 +51,57 @@ def test_remote_parse_keeps_single_country():
     assert parse_job_location("Remote - Europe")["country"] is None
 
 
-def test_collapse_reposts_keeps_smallest_key():
-    jobs = [
+def test_tab_skips_reposts_within_a_run():
+    tab = Tab("t", {})
+    tab.offer([
         {"key": "b", "company": "Jobgether", "title": "Data  Engineer", "remote": True},
         {"key": "a", "company": "jobgether", "title": "data engineer", "remote": True},
         {"key": "c", "company": "jobgether", "title": "Data Engineer II", "remote": True},
-    ]
-    assert [j["key"] for j in collapse_reposts(jobs)] == ["a", "c"]
+    ])
+    tab.offer([{"key": "b", "company": "other", "title": "Other", "remote": True}])
+    assert [j["key"] for j in tab.pending] == ["b", "c"]
+
+
+class FakeWriter:
+    def __init__(self):
+        self.batches = []
+
+    def add(self, jobs):
+        self.batches.append([j["key"] for j in jobs])
+        return len(jobs)
+
+
+def test_streamer_pushes_in_batches():
+    writer = FakeWriter()
+    tab = Tab("t", {"title_include": ["engineer"]}, writer)
+    streamer = Streamer([tab], batch_size=100, flush_seconds=3600)
+    for company in range(25):  # 25 companies x 10 jobs, half of them matching
+        streamer.put([{"title": f"Engineer {company}-{i}" if i % 2 else "Accountant",
+                       "company": f"c{company}", "url": f"u{company}-{i}"} for i in range(10)])
+    streamer.close()
+    assert [len(b) for b in writer.batches] == [100, 25]
+    assert len(tab.kept) == 125
+
+
+def test_streamer_surfaces_sheet_errors():
+    class BrokenWriter:
+        def add(self, jobs):
+            raise RuntimeError("web app down")
+
+    streamer = Streamer([Tab("t", {}, BrokenWriter())], batch_size=1, flush_seconds=3600)
+    job = {"title": "Engineer", "company": "c", "url": "u"}
+    try:
+        for i in range(1000):  # the failure reaches put() once the sync thread hits it
+            streamer.put([{**job, "url": f"u{i}"}])
+            time.sleep(0.01)
+        raise AssertionError("put() kept accepting jobs after the sync failed")
+    except RuntimeError as e:
+        assert "web app down" in str(e.__cause__ or e)
+    try:
+        streamer.close()
+        raise AssertionError("close() didn't raise")
+    except RuntimeError as e:
+        assert "web app down" in str(e)
 
 
 if __name__ == "__main__":

@@ -13,10 +13,9 @@ import time
 import tomllib
 
 from .fetchers import FETCHERS
-from .scrape import (
-    ROOT_DIR, apply_filters, clean_job_data, collapse_reposts, dedupe, enrich_salary, scrape,
-)
-from .sheets import sync_to_sheet
+from .scrape import ROOT_DIR, scrape
+from .sheets import SheetWriter
+from .stream import Streamer, Tab
 
 
 def load_config(path):
@@ -45,41 +44,40 @@ def main():
     platforms = args.platforms or scrape_cfg.get("platforms") or sorted(FETCHERS)
     max_companies = args.max_companies or scrape_cfg.get("max_companies_per_platform")
 
-    started = time.time()
-    jobs = scrape(platforms, max_companies=max_companies)
-    print(f"Scraped {len(jobs):,} jobs in {time.time() - started:.0f}s")
+    base_filters = config.get("filters", {})
+    tabs = []
+    for tab in get_tabs(sheets_cfg):
+        # Each tab's filter keys override [filters]; the rest of the tab is sheet options.
+        tab_filters = {k: v for k, v in tab.items() if k not in TAB_SHEET_KEYS}
+        writer = None
+        if not args.dry_run:
+            writer = SheetWriter(
+                webapp_url=os.environ.get("JOB_SCRAPER_WEBAPP_URL") or sheets_cfg.get("webapp_url"),
+                token=os.environ.get("JOB_SCRAPER_TOKEN") or sheets_cfg.get("token"),
+                worksheet=tab["worksheet"],
+                prune_after_days=tab.get("prune_after_days",
+                                         sheets_cfg.get("prune_after_days", 30)),
+                max_rows=tab.get("max_rows", sheets_cfg.get("max_rows", 100_000)),
+            )
+        tabs.append(Tab(tab["worksheet"], {**base_filters, **tab_filters}, writer))
 
-    jobs = clean_job_data(jobs)
-    jobs = dedupe(jobs)
+    # Matches are pushed to the sheet in batches while the scrape is still running.
+    streamer = Streamer(tabs, batch_size=sheets_cfg.get("batch_size", 100),
+                        flush_seconds=sheets_cfg.get("flush_seconds", 60))
+    started = time.time()
+    total = scrape(platforms, streamer.put, max_companies=max_companies)
+    streamer.close()
+    print(f"Scraped {total:,} jobs in {time.time() - started:.0f}s")
 
     output_dir = os.path.join(ROOT_DIR, "output")
     os.makedirs(output_dir, exist_ok=True)
-    base_filters = config.get("filters", {})
-
-    for tab in get_tabs(sheets_cfg):
-        worksheet = tab["worksheet"]
-        print(f"--- {worksheet} ---")
-        # Each tab's filter keys override [filters]; the rest of the tab is sheet options.
-        tab_filters = {k: v for k, v in tab.items() if k not in TAB_SHEET_KEYS}
-        tab_jobs = collapse_reposts(apply_filters(jobs, {**base_filters, **tab_filters}))
-        enrich_salary(tab_jobs)
-
-        output_file = os.path.join(output_dir, f"{_slug(worksheet)}.json")
+    for tab in tabs:
+        output_file = os.path.join(output_dir, f"{_slug(tab.name)}.json")
         with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(tab_jobs, f, ensure_ascii=False, indent=1)
-        print(f"Saved {len(tab_jobs):,} jobs to {output_file}")
-
-        if args.dry_run:
-            continue
-
-        sync_to_sheet(
-            tab_jobs,
-            webapp_url=os.environ.get("JOB_SCRAPER_WEBAPP_URL") or sheets_cfg.get("webapp_url"),
-            token=os.environ.get("JOB_SCRAPER_TOKEN") or sheets_cfg.get("token"),
-            worksheet=worksheet,
-            prune_after_days=tab.get("prune_after_days", sheets_cfg.get("prune_after_days", 30)),
-            max_rows=tab.get("max_rows", sheets_cfg.get("max_rows", 100_000)),
-        )
+            json.dump(tab.kept, f, ensure_ascii=False, indent=1)
+        print(f"[{tab.name}] {len(tab.kept):,} jobs matched; saved to {output_file}")
+        if tab.writer:
+            tab.writer.finish()
 
 
 # Keys in a [[sheets.tabs]] entry that configure the sheet rather than filter jobs.

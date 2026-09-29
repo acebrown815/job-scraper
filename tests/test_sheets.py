@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from job_scraper.scrape import apply_filters, job_identity
-from job_scraper.sheets import COLUMNS, plan_sync
+from job_scraper.sheets import COLUMNS, build_new_rows, plan_sync
 
 TODAY = date(2026, 9, 22)
 
@@ -37,7 +37,18 @@ def test_only_new_jobs_inserted_existing_left_alone():
     rows = as_dicts(header, plan["new_rows"])
     assert set(rows) == {"b"}  # "a" already exists; duplicate "b" inserted once
     assert rows["b"]["status"] == "" and len(plan["new_rows"][0]) == len(header)
-    assert set(plan) == {"header", "new_rows", "prune"}  # nothing updates existing rows
+    assert "update" not in plan  # nothing updates existing rows
+
+
+def test_later_batches_skip_jobs_from_earlier_batches():
+    keys, idents = {"in-sheet"}, set()
+    first = build_new_rows([job("a"), job("b", "Backend Engineer")], COLUMNS, keys, idents,
+                           "2026-09-22")
+    second = build_new_rows([job("a2"), job("in-sheet", "X"), job("c", "QA Engineer")],
+                            COLUMNS, keys, idents, "2026-09-22")
+    key = COLUMNS.index("key")
+    assert [r[key] for r in first] == ["b", "a"]  # sorted by company, then title
+    assert [r[key] for r in second] == ["c"]  # a2 repeats a's company + title
 
 
 def test_same_company_and_title_not_added_twice():
