@@ -26,6 +26,8 @@ token = ""
 worksheet = "Jobs"           # tab name when no [[sheets.tabs]] are set; created if missing
 prune_after_days = 30        # drop rows not seen in a scrape for this many days
 max_rows = 100000            # Sheets caps a spreadsheet at 10M cells
+batch_size = 100             # push a tab's new matches every this many jobs...
+flush_seconds = 60           # ...or this often, while the scrape is running
 
 # One tab per job set. Each tab can override any [filters] key (and prune_after_days /
 # max_rows). The scrape runs once; each tab is filtered and synced separately.

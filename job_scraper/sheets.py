@@ -59,34 +59,18 @@ def plan_sync(header, keys, first_seen, jobs, today=None, prune_after_days=30,
       header     the header to write, or None if unchanged (our missing columns appended)
       new_rows   rows to insert (jobs whose key isn't in the sheet), aligned with the header
       prune      keys of rows added more than prune_after_days ago
+      known_keys / known_idents   keys and company + title identities already in the sheet
     """
     today = today or date.today()
-    today_s = today.isoformat()
 
     full_header = list(header)
     for col in COLUMNS:
         if col not in full_header:
             full_header.append(col)
-    idx = {col: full_header.index(col) for col in COLUMNS}
 
     existing = {str(k): str(fs or "") for k, fs in zip(keys, first_seen) if k}
-
-    known = {job_identity(c, t) for c, t in zip(companies, titles) if c or t}
-    new_jobs = {}
-    for job in jobs:
-        ident = job_identity(job.get("company"), job.get("title"))
-        if job["key"] not in existing and ident not in known:
-            known.add(ident)
-            new_jobs[job["key"]] = job
-
-    new_rows = []
-    for job in sorted(new_jobs.values(), key=lambda j: ((j.get("company") or "").lower(),
-                                                        (j.get("title") or "").lower())):
-        row = [""] * len(full_header)
-        for col, value in _job_to_fields(job).items():
-            row[idx[col]] = value
-        row[idx["first_seen"]] = today_s
-        new_rows.append(row)
+    known_idents = {job_identity(c, t) for c, t in zip(companies, titles) if c or t}
+    new_rows = build_new_rows(jobs, full_header, set(existing), known_idents, today.isoformat())
 
     prune = []
     if prune_after_days:
@@ -100,7 +84,33 @@ def plan_sync(header, keys, first_seen, jobs, today=None, prune_after_days=30,
         "header": full_header if full_header != list(header) else None,
         "new_rows": new_rows,
         "prune": prune,
+        "known_keys": set(existing),
+        "known_idents": known_idents,
     }
+
+
+def build_new_rows(jobs, header, known_keys, known_idents, today_s):
+    """Rows (aligned with header) for jobs whose key and company + title aren't known yet.
+    Adds the new ones to known_keys / known_idents, so later batches skip them too."""
+    idx = {col: header.index(col) for col in COLUMNS}
+    new_jobs = []
+    for job in jobs:  # first arrival wins among duplicates
+        ident = job_identity(job.get("company"), job.get("title"))
+        if job["key"] in known_keys or ident in known_idents:
+            continue
+        known_keys.add(job["key"])
+        known_idents.add(ident)
+        new_jobs.append(job)
+
+    rows = []
+    for job in sorted(new_jobs, key=lambda j: ((j.get("company") or "").lower(),
+                                               (j.get("title") or "").lower())):
+        row = [""] * len(header)
+        for col, value in _job_to_fields(job).items():
+            row[idx[col]] = value
+        row[idx["first_seen"]] = today_s
+        rows.append(row)
+    return rows
 
 
 class WebAppClient:
@@ -179,30 +189,44 @@ def read_columns(client, columns):
             return header, values
 
 
-def sync_to_sheet(jobs, webapp_url, token, worksheet="Jobs",
-                  prune_after_days=30, max_rows=None):
-    client = WebAppClient(webapp_url, token, worksheet)
+class SheetWriter:
+    """Incremental writer for one tab. On creation it reads the tab once, fixes the header
+    and prunes old rows; then ``add(jobs)`` can be called repeatedly while the scrape runs,
+    inserting only jobs not already in the sheet or in an earlier batch."""
 
-    header, cols = read_columns(client, ["key", "first_seen", "company", "title"])
-    print(f"Read {len(cols['key']):,} existing rows from '{worksheet}'")
-    plan = plan_sync(header, cols["key"], cols["first_seen"], jobs,
-                     prune_after_days=prune_after_days,
-                     companies=cols["company"], titles=cols["title"])
+    def __init__(self, webapp_url, token, worksheet="Jobs", prune_after_days=30, max_rows=None):
+        self.client = WebAppClient(webapp_url, token, worksheet)
+        self.worksheet, self.max_rows = worksheet, max_rows
+        self.today_s = date.today().isoformat()
 
-    if plan["header"]:
-        client.call("set_header", header=plan["header"])
+        header, cols = read_columns(self.client, ["key", "first_seen", "company", "title"])
+        print(f"Read {len(cols['key']):,} existing rows from '{worksheet}'")
+        plan = plan_sync(header, cols["key"], cols["first_seen"], [],
+                         prune_after_days=prune_after_days,
+                         companies=cols["company"], titles=cols["title"])
+        if plan["header"]:
+            self.client.call("set_header", header=plan["header"])
+        self.header = plan["header"] or header
+        # Pruned rows stay known, so a job removed today isn't re-added in the same run.
+        self.known_keys, self.known_idents = plan["known_keys"], plan["known_idents"]
 
-    rows = [[_to_cell(v) for v in row] for row in plan["new_rows"]]
-    # Each chunk goes in at the top, so send the last chunk first to keep the order.
-    inserted = 0
-    for chunk in reversed(list(_chunks(rows, WRITE_CHUNK_ROWS))):
-        inserted += client.call("insert_rows", values=chunk)["inserted"]
+        self.inserted = self.deleted = 0
+        for chunk in _chunks(plan["prune"], KEY_CHUNK):
+            self.deleted += self.client.call("delete_keys", keys=chunk)["deleted"]
 
-    deleted = 0
-    for chunk in _chunks(plan["prune"], KEY_CHUNK):
-        deleted += client.call("delete_keys", keys=chunk)["deleted"]
-    if max_rows:
-        deleted += client.call("trim", max_rows=max_rows)["deleted"]
+    def add(self, jobs):
+        """Insert the jobs that are new to this tab, at the top. Returns how many."""
+        rows = build_new_rows(jobs, self.header, self.known_keys, self.known_idents,
+                              self.today_s)
+        rows = [[_to_cell(v) for v in row] for row in rows]
+        inserted = 0
+        # Each chunk goes in at the top, so send the last chunk first to keep the order.
+        for chunk in reversed(list(_chunks(rows, WRITE_CHUNK_ROWS))):
+            inserted += self.client.call("insert_rows", values=chunk)["inserted"]
+        self.inserted += inserted
+        return inserted
 
-    print(f"Sheet '{worksheet}': added {inserted:,}, "
-          f"removed {deleted:,}")
+    def finish(self):
+        if self.max_rows:
+            self.deleted += self.client.call("trim", max_rows=self.max_rows)["deleted"]
+        print(f"Sheet '{self.worksheet}': added {self.inserted:,}, removed {self.deleted:,}")

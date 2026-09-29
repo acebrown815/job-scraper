@@ -44,8 +44,8 @@ script property (the id from `docs.google.com/spreadsheets/d/<ID>/edit`).
 ```sh
 python -m job_scraper                                   # full run per config.toml
 python -m job_scraper --platforms greenhouse --max-companies 50   # quick test
-python -m job_scraper --dry-run                         # no sheet; writes output/jobs.json
-python tests/test_sheets.py                             # offline tests
+python -m job_scraper --dry-run                         # no sheet; writes output/<tab>.json
+python tests/test_sheets.py && python tests/test_location_filter.py   # offline tests
 ```
 
 ## How the sheet is maintained
@@ -63,7 +63,14 @@ Workday/Paylocity). Syncs are incremental. On every run:
 - **extra columns you add yourself (e.g. `status`, `notes`) are never touched**,
   and you can sort, insert or delete rows freely between runs
 
-The sync reads just the `key` and `first_seen` columns, decides what to change in Python
+**The sheet fills in while the scrape runs.** Each company's jobs are filtered as soon
+as they're downloaded, and a tab's new matches are pushed every `batch_size` (100) jobs
+or every `flush_seconds` (60), whichever comes first. Jobs that match no tab are dropped
+immediately, so memory stays small however many companies you scrape. If the sheet
+can't be written, the scrape stops instead of carrying on without it.
+
+At the start of a run, each tab's `key`, `first_seen`, `company` and `title` columns
+are read once and old rows are pruned. After that, the sync decides what to add in Python
 ([sheets.py](job_scraper/sheets.py)), and sends only those changes to the web app. The
 web app finds rows by `key`, never by position, and skips inserting keys that already
 exist, so every request is safe to retry. Text is written with a leading `'`, so a
@@ -87,6 +94,7 @@ job_scraper/
   fetchers.py     one fetcher per ATS + skill-level / recruiter classification
   scrape.py       company loading, parallel fetch, dead-slug cache, clean, filter, salary
   sheets.py       incremental sync + client for the Apps Script web app
+  stream.py       filters jobs per tab as they arrive and pushes them in batches
   geolocation.py  location parsing (used for remote + country)
   __main__.py     CLI
 apps_script/      Code.gs, the web app to paste into Apps Script

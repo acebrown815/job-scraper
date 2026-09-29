@@ -1,5 +1,6 @@
 """Scrape orchestration: load company lists, fetch in parallel, clean, enrich, filter."""
 
+import functools
 import json
 import os
 import re
@@ -73,42 +74,49 @@ def save_dead_slugs(platform, slugs):
 # ============================================================
 
 
-def fetch_all_jobs(platform, companies):
-    """Fetch jobs from all companies of one platform in parallel."""
+def fetch_all_jobs(platform, companies, on_jobs):
+    """Fetch jobs from all companies of one platform in parallel, handing each company's
+    jobs to ``on_jobs`` as soon as they arrive. Returns the number of jobs fetched."""
     fetcher = FETCHERS[platform]
     dead_slugs = load_dead_slugs(platform)
     live_companies = [s for s in companies if s not in dead_slugs]
     print(f"[{platform}] checking {len(live_companies):,} companies "
           f"(skipping {len(dead_slugs):,} known dead)")
 
-    all_jobs = []
+    total = 0
     active = 0
     new_dead = set()
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS.get(platform, 30)) as executor:
+    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS.get(platform, 30))
+    try:
         futures = [executor.submit(fetcher, slug) for slug in live_companies]
         for i, future in enumerate(as_completed(futures), 1):
             slug, jobs, status_code = future.result()
             if jobs:
-                all_jobs.extend(jobs)
+                on_jobs(jobs)
+                total += len(jobs)
                 active += 1
             elif status_code in (404, 410):
                 # Only cache permanent failures
                 new_dead.add(slug)
             if i % 200 == 0:
                 print(f"  [{platform}] {i:,}/{len(live_companies):,} checked, "
-                      f"{len(all_jobs):,} jobs so far")
+                      f"{total:,} jobs so far")
+    finally:
+        # On an error (e.g. the sheet sync failed) don't keep fetching the remaining companies.
+        executor.shutdown(cancel_futures=True)
 
     if new_dead:
         save_dead_slugs(platform, dead_slugs | new_dead)
 
-    print(f"[{platform}] done: {active:,} active companies, {len(all_jobs):,} jobs, "
+    print(f"[{platform}] done: {active:,} active companies, {total:,} jobs, "
           f"{len(new_dead):,} newly dead")
-    return all_jobs
+    return total
 
 
-def scrape(platforms, max_companies=None):
-    """Scrape the given platforms concurrently. Returns a flat list of jobs."""
+def scrape(platforms, on_jobs, max_companies=None):
+    """Scrape the given platforms concurrently, calling ``on_jobs(jobs)`` once per company
+    (from worker threads). Returns the total number of jobs fetched."""
     work = []
     for platform in platforms:
         companies = sorted(load_companies(platform))
@@ -117,12 +125,12 @@ def scrape(platforms, max_companies=None):
         if companies:
             work.append((platform, companies))
 
-    all_jobs = []
+    total = 0
     with ThreadPoolExecutor(max_workers=max(len(work), 1)) as executor:
-        futures = {executor.submit(fetch_all_jobs, p, c): p for p, c in work}
+        futures = {executor.submit(fetch_all_jobs, p, c, on_jobs): p for p, c in work}
         for future in as_completed(futures):
-            all_jobs.extend(future.result())
-    return all_jobs
+            total += future.result()
+    return total
 
 
 # ============================================================
@@ -131,27 +139,31 @@ def scrape(platforms, max_companies=None):
 
 
 def clean_job_data(jobs):
-    """Remove entries without a usable title, URL or company."""
-    cleaned = [
-        job for job in jobs
-        if (job.get("title") or "").strip().lower() not in ("", "not specified", "n/a", "unknown")
-        and job.get("url")
-        and (job.get("company") or job.get("company_slug"))
-    ]
-    if len(cleaned) != len(jobs):
-        print(f"Dropped {len(jobs) - len(cleaned):,} invalid jobs")
+    """Keep entries with a usable title, URL and company, and give each its ``key``."""
+    cleaned = []
+    for job in jobs:
+        if ((job.get("title") or "").strip().lower() in ("", "not specified", "n/a", "unknown")
+                or not job.get("url") or not (job.get("company") or job.get("company_slug"))):
+            continue
+        job["key"] = get_dedup_key(job)
+        if job["key"]:
+            cleaned.append(job)
     return cleaned
+
+
+@functools.cache
+def _salary_lookup():
+    path = os.path.join(DATA_DIR, "salary_lookup.json")
+    if not os.path.exists(path):
+        return {}, {}
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get("primary", {}), data.get("fallback", {})
 
 
 def enrich_salary(jobs):
     """Attach median salary from the static lookup (company|title|level, then title|level)."""
-    path = os.path.join(DATA_DIR, "salary_lookup.json")
-    if not os.path.exists(path):
-        return
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    primary, fallback = data.get("primary", {}), data.get("fallback", {})
-
+    primary, fallback = _salary_lookup()
     for job in jobs:
         company = (job.get("company") or "").lower().strip()
         title = (job.get("title") or "").lower().strip()
@@ -195,7 +207,7 @@ def _in_countries(job, countries, keep_unplaced=True):
     return keep_unplaced and not unknown
 
 
-def apply_filters(jobs, filters):
+def apply_filters(jobs, filters, verbose=True):
     """Keep only jobs matching the [filters] config section. Empty/missing options are ignored."""
     include = [re.compile(p, re.I) for p in filters.get("title_include", [])]
     exclude = [re.compile(p, re.I) for p in filters.get("title_exclude", [])]
@@ -231,7 +243,8 @@ def apply_filters(jobs, filters):
                 continue
         kept.append(job)
 
-    print(f"Filters kept {len(kept):,} of {len(jobs):,} jobs")
+    if verbose:
+        print(f"Filters kept {len(kept):,} of {len(jobs):,} jobs")
     return kept
 
 
@@ -252,18 +265,6 @@ def get_dedup_key(job):
     return url
 
 
-def dedupe(jobs):
-    seen = {}
-    for job in jobs:
-        key = get_dedup_key(job)
-        if key:
-            job["key"] = key
-            seen[key] = job
-    if len(seen) != len(jobs):
-        print(f"Removed {len(jobs) - len(seen):,} duplicate jobs")
-    return list(seen.values())
-
-
 COMPANY_SUFFIXES = re.compile(
     r"\b(inc|llc|ltd|limited|corp|corporation|co|gmbh|hq|careers|jobs)\b")
 
@@ -278,22 +279,3 @@ def job_identity(company, title):
     title = re.sub(r"\b(remote|hybrid)\b", " ", title)
     title = " ".join(re.sub(r"[^a-z0-9+#]+", " ", title).split())
     return f"{company}|{title}"
-
-
-def _repost_ident(job):
-    return job_identity(job.get("company") or job.get("company_slug"), job.get("title"))
-
-
-def collapse_reposts(jobs):
-    """Keep one job per company + title (see job_identity). Companies often post the same
-    opening once per location or on more than one board, each with its own URL. Run this
-    after filtering so the survivor is one that matched. The smallest key wins, so the
-    same row survives across runs."""
-    best = {}
-    for job in jobs:
-        ident = _repost_ident(job)
-        if ident not in best or job["key"] < best[ident]["key"]:
-            best[ident] = job
-    if len(best) != len(jobs):
-        print(f"Collapsed {len(jobs) - len(best):,} reposts of the same job")
-    return [job for job in jobs if best[_repost_ident(job)] is job]
