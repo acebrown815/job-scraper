@@ -48,6 +48,23 @@ python -m job_scraper --dry-run                         # no sheet; writes outpu
 python tests/test_sheets.py && python tests/test_location_filter.py   # offline tests
 ```
 
+## Tabs and roles
+
+The default config writes eight tabs: **US** and **EU** remote jobs, each split into
+**Software**, **ML/AI**, **Data** and **DevOps/SRE** (`US - Software`, `EU - ML/AI`, ...).
+
+- `[[roles]]` defines the role groups as title regexes. A job gets the **first** role whose
+  patterns match, so it lands in exactly one role tab; titles matching no role are dropped.
+- `[filters]` applies to every tab: `title_exclude` drops non-developer roles that still
+  look like dev titles (support, sales, field service, managers, QA, security, hardware,
+  ...), plus the remote, recruiter and age filters. Other engineering fields (civil,
+  electrical, ...) never match a role, so they don't need excluding.
+- Each `[[sheets.tabs]]` entry names its `worksheet`, `countries` and `role`, and can
+  override any `[filters]` key.
+
+`config.toml` is git-ignored, so copy filter changes to every machine that runs the
+scraper (`config.example.toml` has the same filters, without the URL and token).
+
 ## How the sheet is maintained
 
 Each row is keyed on the `key` column (the job URL, or a stable id for

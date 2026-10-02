@@ -44,7 +44,7 @@ def main():
     platforms = args.platforms or scrape_cfg.get("platforms") or sorted(FETCHERS)
     max_companies = args.max_companies or scrape_cfg.get("max_companies_per_platform")
 
-    base_filters = config.get("filters", {})
+    base_filters = {**config.get("filters", {}), "roles": config.get("roles", [])}
     tabs = []
     for tab in get_tabs(sheets_cfg):
         # Each tab's filter keys override [filters]; the rest of the tab is sheet options.

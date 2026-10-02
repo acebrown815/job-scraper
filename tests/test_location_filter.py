@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from job_scraper.geolocation import parse_job_location
-from job_scraper.scrape import _in_countries, expand_countries
+from job_scraper.scrape import _in_countries, apply_filters, classify_role, expand_countries
 from job_scraper.stream import Streamer, Tab
 
 US = {"US"}
@@ -49,6 +49,37 @@ def test_remote_parse_keeps_single_country():
     assert parse_job_location("Remote, United States")["country"] == "US"
     assert parse_job_location("Remote (Ukraine)")["country"] == "UA"
     assert parse_job_location("Remote - Europe")["country"] is None
+
+
+ROLES = [
+    {"name": "ML/AI", "title_include": [r"\b(ml|ai)\b(\W+\w+){0,2}\W+engineer\b",
+                                        r"\bengineer\b.*\b(ml|ai)\b"]},
+    {"name": "Data", "title_include": [r"\bdata\b(\W+\w+){0,2}\W+engineer\b"]},
+    {"name": "Software", "title_include": [r"\bsoftware\b(\W+\w+){0,2}\W+engineer\b",
+                                           r"\bdevelopers?\b"]},
+]
+
+
+def test_first_matching_role_wins():
+    assert classify_role("Senior ML Engineer", ROLES) == "ML/AI"
+    assert classify_role("Software Engineer, ML Infrastructure", ROLES) == "ML/AI"
+    assert classify_role("Senior Data Engineer", ROLES) == "Data"
+    assert classify_role("Senior Software Engineer", ROLES) == "Software"
+    assert classify_role("Mechanical Engineer", ROLES) is None
+
+
+def test_tab_role_filter():
+    jobs = [{"title": t} for t in ["ML Engineer", "Data Engineer", "Software Engineer",
+                                   "Civil Engineer", "QA Developer"]]
+    titles = lambda f: [j["title"] for j in apply_filters(jobs, f, verbose=False)]
+    assert titles({"roles": ROLES, "role": "Data"}) == ["Data Engineer"]
+    assert titles({"roles": ROLES, "title_exclude": [r"\bqa\b"]}) == \
+        ["ML Engineer", "Data Engineer", "Software Engineer"]  # no role: any role passes
+    try:
+        apply_filters(jobs, {"roles": ROLES, "role": "Softwear"})
+        raise AssertionError("unknown role accepted")
+    except SystemExit as e:
+        assert "Softwear" in str(e)
 
 
 def test_tab_skips_reposts_within_a_run():

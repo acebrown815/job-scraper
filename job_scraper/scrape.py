@@ -207,8 +207,27 @@ def _in_countries(job, countries, keep_unplaced=True):
     return keep_unplaced and not unknown
 
 
+def classify_role(title, roles):
+    """Name of the first role whose title_include patterns match, or None.
+
+    roles: the ordered [[roles]] config, [{"name": ..., "title_include": [...]}, ...]. Order
+    decides overlaps: "Software Engineer, ML Infrastructure" goes to whichever of ML/AI,
+    DevOps/SRE or Software is listed first."""
+    for role in roles:
+        if any(re.search(p, title or "", re.I) for p in role.get("title_include", [])):
+            return role["name"]
+    return None
+
+
 def apply_filters(jobs, filters, verbose=True):
-    """Keep only jobs matching the [filters] config section. Empty/missing options are ignored."""
+    """Keep only jobs matching the [filters] config section. Empty/missing options are ignored.
+
+    With ``roles`` (the [[roles]] config) set, a job must classify into some role, or into
+    exactly ``role`` when that is set too (one tab per role)."""
+    roles = filters.get("roles") or []
+    role = filters.get("role")
+    if role and role not in {r["name"] for r in roles}:
+        raise SystemExit(f"Unknown role {role!r}; define it under [[roles]] in config.toml.")
     include = [re.compile(p, re.I) for p in filters.get("title_include", [])]
     exclude = [re.compile(p, re.I) for p in filters.get("title_exclude", [])]
     levels = set(filters.get("skill_levels", []))
@@ -223,18 +242,23 @@ def apply_filters(jobs, filters, verbose=True):
 
     kept = []
     for job in jobs:
+        # Cheap field checks first: most jobs fail these and skip the regexes below.
+        if remote_only and not job.get("remote"):
+            continue
+        if exclude_recruiters and job.get("is_recruiter"):
+            continue
+        if levels and job.get("skill_level") not in levels:
+            continue
         title = job.get("title") or ""
         if include and not any(p.search(title) for p in include):
             continue
         if any(p.search(title) for p in exclude):
             continue
-        if levels and job.get("skill_level") not in levels:
-            continue
-        if remote_only and not job.get("remote"):
-            continue
+        if roles:
+            job_role = classify_role(title, roles)
+            if job_role is None or (role and job_role != role):
+                continue
         if countries and not _in_countries(job, countries, keep_unplaced):
-            continue
-        if exclude_recruiters and job.get("is_recruiter"):
             continue
         if cutoff:
             posted = _parse_date(job.get("updated_at"))

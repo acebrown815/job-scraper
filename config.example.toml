@@ -8,15 +8,68 @@ platforms = ["greenhouse", "lever", "ashby"]
 
 [filters]
 # All filters are optional; leave a list empty to disable it.
-# Regexes, matched case-insensitively against the job title.
-title_include = ["engineer", "developer", "programmer"]
-title_exclude = ["intern\\b", "sales"]
+# Regexes, matched case-insensitively against the job title. Which titles count as which
+# role is set by [[roles]] below; these excludes apply to every tab first. They only need
+# to catch titles a role would accept: a role word next to "Engineer"/"Developer" in a
+# non-developer job ("AI Security Engineer", "Business Developer", "Embedded Hardware
+# Engineer"). Other engineering fields (civil, environmental, ...) never match a role.
+title_exclude = [
+  '\bintern\b', 'sales', 'business developer', 'developer relations',
+  # support / customer-facing / pre-sales
+  'field service', 'field applications?', '\bfae\b', 'support engineer',
+  '\bcustomer (reliability |success |support |facing )?engineer\b', 'solutions? engineer',
+  # managers, executives, non-engineering roles
+  '^(?!.*\bdeveloper\b).*\bmanager\b', '^((senior|sr\.?)\s+)?manager\b', '\bdirector\b',
+  '\b(vp|vice president|head of|chief|cto)\b',
+  '^(?!.*\b(software|developer)\b).*marketing', '\bgtm\b', '\bactuary',
+  # QA / test and security roles
+  '\b(qa|quality|tests?|testing|sdet)\b', '\b(security|secops|appsec|cybersecurity|red team|penetration|pentest|privacy)\b',
+  # chip / hardware next to "embedded", "robotics", "firmware", "AI"
+  'silicon', '\bdft\b', '\basic\b', '\bfpga\b', '\brtl\b', 'hardware', 'electrical', 'electronics', 'mechanical',
+  # low-code / niche integration roles
+  '\bhl7\b', 'power platform', '\bpower (apps|automate|bi|developer)\b',
+]
 skill_levels = []            # any of: intern, entry, mid, senior
 countries = ["US"]           # ISO codes or regions ("EU", "North America"); remote jobs must
                              # name one of these, or no place at all. Tabs can override.
-remote_only = false
+remote_only = true
 exclude_recruiters = true
 max_age_days = 30            # by posted date, where the ATS provides one
+
+# Role groups. A job gets the FIRST role whose patterns match its title, so it lands in
+# exactly one role tab ("Software Engineer, ML Infrastructure" -> ML/AI). A title matching
+# no role is dropped. Patterns: "<keyword> [up to 2 words] Engineer/Developer", or
+# "Engineer, <keyword>".
+[[roles]]
+name = "ML/AI"
+title_include = [
+  '\b(machine learning|ml|mlops|ai|artificial intelligence|llm|genai|generative ai|agentic|agents?|deep learning|computer vision|nlp|perception|vlm|prompt(ing)?)\b(\W+\w+){0,2}\W+(engineer|developer)\b',
+  '\b(engineer|developer)\b.*\b(machine learning|ml|mlops|ai|llm|agents?|perception)\b',
+]
+
+[[roles]]
+name = "Data"
+title_include = [
+  '\b(data|big data|analytics|databricks|snowflake|spark|etl|database|business intelligence|bi|data warehouse)\b(\W+\w+){0,2}\W+(engineer|developer)\b',
+  '\b(engineer|developer)\b.*\b(data|analytics|database)\b',
+]
+
+[[roles]]
+name = "DevOps/SRE"
+title_include = [
+  '\b(devops|devsecops|site reliability|sre|reliability|platform|infrastructure|infra|cloud|kubernetes|k8s|iac|terraform|aws|azure|gcp|build|release|ci/?cd|observability)\b(\W+\w+){0,2}\W+(engineer|developer)\b',
+  '\b(engineer|developer)\b.*\b(devops|sre|site reliability|infrastructure|cloud)\b',
+]
+
+[[roles]]
+name = "Software"
+title_include = [
+  '\b(software|back[- ]?end|front[- ]?end|full[- ]?stack|fullstack|web|mobile|ios|android|react( native)?|node|python|java|golang|go|rust|ruby|php|\.net|c#|scala|kotlin|swift|typescript|javascript|api|integration|embedded|firmware|game|blockchain|forward[- ]deployed|deployment|product|applications?|salesforce|servicenow|robotics|motion planning|localization|simulation|compiler|graphics|search)\b(\W+\w+){0,2}\W+(engineer|developer)\b',
+  '\bengineer\b.{0,4}\b(software|backend|frontend|full[- ]?stack)\b',
+  # bare seniority: "Principal Engineer", "Staff Engineer, AvalancheGo", "Senior Developer"
+  '^((sr\.?|senior|staff|principal|lead|founding|junior|jr\.?|associate)\s+)*(engineer|developer)\b',
+  '\bdevelopers?\b', '\bprogrammer\b',
+]
 
 [sheets]
 # Apps Script web app deployment URL, ending in /exec   (or env JOB_SCRAPER_WEBAPP_URL)
@@ -29,18 +82,48 @@ max_rows = 100000            # Sheets caps a spreadsheet at 10M cells
 batch_size = 100             # push a tab's new matches every this many jobs...
 flush_seconds = 60           # ...or this often, while the scrape is running
 
-# One tab per job set. Each tab can override any [filters] key (and prune_after_days /
-# max_rows). The scrape runs once; each tab is filtered and synced separately.
-# Remove these to write a single tab named by [sheets].worksheet.
+# One tab per region x role. Each tab can override any [filters] key (and prune_after_days /
+# max_rows), and picks one [[roles]] name with `role`. The scrape runs once; each tab is
+# filtered and synced separately. Remove these to write a single tab named by
+# [sheets].worksheet (it then gets every role).
+# Plain "Remote"/"Anywhere" jobs (no place named) go to both regions; set
+# keep_unplaced_remote = false on the EU tabs to keep only jobs naming a European place.
 [[sheets.tabs]]
-worksheet = "US Remote"
+worksheet = "US - Software"
 countries = ["US"]
-remote_only = true
+role = "Software"
 
 [[sheets.tabs]]
-worksheet = "EU Remote"
+worksheet = "US - ML/AI"
+countries = ["US"]
+role = "ML/AI"
+
+[[sheets.tabs]]
+worksheet = "US - Data"
+countries = ["US"]
+role = "Data"
+
+[[sheets.tabs]]
+worksheet = "US - DevOps/SRE"
+countries = ["US"]
+role = "DevOps/SRE"
+
+[[sheets.tabs]]
+worksheet = "EU - Software"
 countries = ["EU"]
-remote_only = true
-# Plain "Remote"/"Anywhere" jobs (no place named) go to every tab by default; most
-# come from US companies. Set false to keep only jobs that name a European place.
-keep_unplaced_remote = true
+role = "Software"
+
+[[sheets.tabs]]
+worksheet = "EU - ML/AI"
+countries = ["EU"]
+role = "ML/AI"
+
+[[sheets.tabs]]
+worksheet = "EU - Data"
+countries = ["EU"]
+role = "Data"
+
+[[sheets.tabs]]
+worksheet = "EU - DevOps/SRE"
+countries = ["EU"]
+role = "DevOps/SRE"
