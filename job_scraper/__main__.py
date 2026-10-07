@@ -13,6 +13,7 @@ import time
 import tomllib
 
 from .fetchers import FETCHERS
+from .jobspy_boards import BOARDS, check_board
 from .scrape import ROOT_DIR, scrape
 from .sheets import SheetWriter
 from .stream import Streamer, Tab
@@ -29,7 +30,7 @@ def load_config(path):
 def main():
     parser = argparse.ArgumentParser(description="Scrape ATS job boards into Google Sheets")
     parser.add_argument("--config", default=os.path.join(ROOT_DIR, "config.toml"))
-    parser.add_argument("--platforms", nargs="+", choices=sorted(FETCHERS) + ["indeed"],
+    parser.add_argument("--platforms", nargs="+", choices=sorted(FETCHERS) + sorted(BOARDS),
                         help="Override [scrape].platforms")
     parser.add_argument("--max-companies", type=int,
                         help="Only check the first N companies per platform (for testing)")
@@ -43,9 +44,9 @@ def main():
 
     platforms = args.platforms or scrape_cfg.get("platforms") or sorted(FETCHERS)
     max_companies = args.max_companies or scrape_cfg.get("max_companies_per_platform")
-    if "indeed" in platforms:
-        from .indeed import check_indeed
-        check_indeed(config.get("indeed", {}))  # fail now, not an hour into the scrape
+    for board in BOARDS:
+        if board in platforms:
+            check_board(board, config.get(board))  # fail now, not an hour into the scrape
 
     base_filters = {**config.get("filters", {}), "roles": config.get("roles", [])}
     tabs = []
@@ -69,7 +70,7 @@ def main():
                         flush_seconds=sheets_cfg.get("flush_seconds", 60))
     started = time.time()
     total = scrape(platforms, streamer.put, max_companies=max_companies,
-                   indeed_cfg=config.get("indeed", {}))
+                   board_cfgs={board: config.get(board) for board in BOARDS})
     streamer.close()
     print(f"Scraped {total:,} jobs in {time.time() - started:.0f}s")
 

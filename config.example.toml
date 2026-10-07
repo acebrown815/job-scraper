@@ -1,9 +1,9 @@
 # Copy to config.toml and edit.
 
 [scrape]
-# Any of: greenhouse, lever, ashby, bamboohr, workday, icims, paylocity, indeed
+# Any of: greenhouse, lever, ashby, bamboohr, workday, icims, paylocity, indeed, glassdoor
 # Scraping all seven takes hours (20k+ companies); greenhouse + lever + ashby is ~15 min.
-platforms = ["greenhouse", "lever", "ashby", "indeed"]
+platforms = ["greenhouse", "lever", "ashby", "indeed", "glassdoor"]
 # max_companies_per_platform = 100   # uncomment for quick test runs
 
 [indeed]
@@ -28,6 +28,23 @@ remote_only = true           # Indeed's own remote filter (excludes hybrid)
 hours_old = 48               # only jobs added to Indeed in the last N hours
 results_per_search = 1000    # Indeed caps each search at about this many
 workers = 4                  # parallel searches
+
+[glassdoor]
+# Glassdoor searches through JobSpy, like [indeed]. Glassdoor ignores the country (its .de
+# and .co.uk sites return the same US jobs), so it's US only: results go to the US tabs.
+# It rate-limits sooner than Indeed, hence fewer parallel searches.
+countries = ["USA"]
+search_terms = [
+  "software engineer", "software developer", "full stack developer", "backend engineer",
+  "machine learning engineer", "AI engineer",
+  "data engineer",
+  "devops engineer", "site reliability engineer", "platform engineer",
+]
+remote_only = true           # Glassdoor's remote filter; ~40% still come back on-site and
+                             # are dropped by [filters].remote_only
+hours_old = 48
+results_per_search = 1000
+workers = 2
 
 [filters]
 # All filters are optional; leave a list empty to disable it.

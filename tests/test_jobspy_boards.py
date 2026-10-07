@@ -1,4 +1,5 @@
-"""Offline tests for converting Indeed (JobSpy) results. Run: python tests/test_indeed.py
+"""Offline tests for converting Indeed / Glassdoor (JobSpy) results.
+Run: python tests/test_jobspy_boards.py
 Uses stand-in objects, so JobSpy doesn't need to be installed."""
 
 import sys
@@ -8,7 +9,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from job_scraper.indeed import _iso_code, _to_job
+from job_scraper.jobspy_boards import BOARDS, _iso_code, _settings, _to_job
 from job_scraper.scrape import _in_countries, expand_countries
 
 
@@ -47,6 +48,22 @@ def test_country_comes_from_indeed_not_the_location_text():
     assert job["country"] == "DE"
     assert _in_countries(job, expand_countries(["EU"]))
     assert not _in_countries(job, {"US"})
+
+
+def test_glassdoor_remote_job_without_location_goes_to_us():
+    # Glassdoor gives remote jobs no location at all.
+    p = post(title="Senior Backend Engineer", company="Prelim")
+    p.location = None
+    job = _to_job(p, "US", "Glassdoor")
+    assert job["ats"] == "Glassdoor" and job["country"] == "US"
+    assert job["location"] == "Remote"
+    assert _in_countries(job, {"US"}) and not _in_countries(job, expand_countries(["EU"]))
+
+
+def test_board_defaults_and_overrides():
+    assert set(BOARDS) == {"indeed", "glassdoor"}
+    assert _settings("glassdoor", None) == {"countries": ["USA"], "workers": 2}
+    assert _settings("indeed", {"workers": 8})["workers"] == 8
 
 
 if __name__ == "__main__":

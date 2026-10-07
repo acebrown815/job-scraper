@@ -1,8 +1,8 @@
 # job-scraper
 
 Scrapes public job postings from seven ATS platforms (Greenhouse, Lever, Ashby,
-BambooHR, Workday, iCIMS, Paylocity) plus **Indeed** searches, and upserts them into a
-Google Sheet.
+BambooHR, Workday, iCIMS, Paylocity) plus **Indeed** and **Glassdoor** searches, and
+upserts them into a Google Sheet.
 
 Extracted from `../job-board-aggregator` (`scripts/scraper.py`, `geolocation.py`,
 and the dedup logic from `merge_data.py`). The website, chunked-gzip output, and
@@ -46,22 +46,30 @@ script property (the id from `docs.google.com/spreadsheets/d/<ID>/edit`).
 python -m job_scraper                                   # full run per config.toml
 python -m job_scraper --platforms greenhouse --max-companies 50   # quick test
 python -m job_scraper --dry-run                         # no sheet; writes output/<tab>.json
-python tests/test_sheets.py && python tests/test_location_filter.py && python tests/test_indeed.py   # offline tests
+python tests/test_sheets.py && python tests/test_location_filter.py && python tests/test_jobspy_boards.py   # offline tests
 ```
 
-## Indeed
+## Indeed and Glassdoor
 
-`indeed` in `[scrape].platforms` adds Indeed searches through
+`indeed` and `glassdoor` in `[scrape].platforms` add searches through
 [JobSpy](https://github.com/speedyapply/JobSpy) (`pip install python-jobspy`, included
 in `requirements.txt`). Unlike the ATS boards, which are crawled company by company,
-Indeed is searched: one search per country × term in `[indeed]`, each capped by Indeed at
-about 1,000 results, limited to jobs added in the last `hours_old` hours. The default
-config runs 230 searches (USA + 22 European countries × 10 terms), which takes ~1-2
-minutes. Indeed jobs go through the same filters, roles and tabs, and a job already found
-on an ATS board (same company + title) isn't added twice.
+these are searched: one search per country × term in `[indeed]` / `[glassdoor]`, each
+capped at about 1,000 results, limited to jobs added in the last `hours_old` hours. Their
+jobs go through the same filters, roles and tabs, and a job already found elsewhere (same
+company + title) isn't added twice.
 
-Indeed's search API is unofficial, so it can change or start blocking without notice;
-upgrading `python-jobspy` is the usual fix. `--max-companies` doesn't limit Indeed.
+- **Indeed**: the default config runs 230 searches (USA + 22 European countries × 10
+  terms), ~1-2 minutes.
+- **Glassdoor**: US only. It ignores the country (its .de and .co.uk sites return the same
+  US jobs), so its jobs go to the US tabs. 10 searches, under a minute. JobSpy reports it
+  rate-limits after ~30 requests per IP, so it runs fewer searches in parallel.
+
+Other JobSpy boards were tested and left out: LinkedIn (JobSpy can't filter it to remote
+jobs), ZipRecruiter and Google Jobs (blocked), Bayt / Naukri / BDJobs (outside US/EU).
+
+These search APIs are unofficial, so they can change or start blocking without notice;
+upgrading `python-jobspy` is the usual fix. `--max-companies` doesn't limit them.
 
 ## Tabs and roles
 
@@ -124,7 +132,7 @@ are dropped, including any notes on them.
 ```
 job_scraper/
   fetchers.py     one fetcher per ATS + skill-level / recruiter classification
-  indeed.py       Indeed searches via JobSpy, converted to the same job shape
+  jobspy_boards.py  Indeed / Glassdoor searches via JobSpy, converted to the same job shape
   scrape.py       company loading, parallel fetch, dead-slug cache, clean, filter, salary
   sheets.py       incremental sync + client for the Apps Script web app
   stream.py       filters jobs per tab as they arrive and pushes them in batches

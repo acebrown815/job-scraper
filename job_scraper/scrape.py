@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from .fetchers import FETCHERS, MAX_WORKERS, load_paylocity
 from .geolocation import REGION_COUNTRIES, location_places
+from .jobspy_boards import BOARDS, fetch_board
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(PACKAGE_DIR)
@@ -114,27 +115,28 @@ def fetch_all_jobs(platform, companies, on_jobs):
     return total
 
 
-def scrape(platforms, on_jobs, max_companies=None, indeed_cfg=None):
+def scrape(platforms, on_jobs, max_companies=None, board_cfgs=None):
     """Scrape the given platforms concurrently, calling ``on_jobs(jobs)`` once per company
-    (or per Indeed search) from worker threads. Returns the total number of jobs fetched.
+    (or per job-board search) from worker threads. Returns the total number of jobs fetched.
 
-    "indeed" in ``platforms`` runs the searches configured in ``indeed_cfg`` ([indeed])."""
+    Job boards in ``platforms`` ("indeed", "glassdoor") run the searches configured in
+    ``board_cfgs[board]`` (the [indeed] / [glassdoor] sections)."""
     work = []
     for platform in platforms:
-        if platform == "indeed":
+        if platform in BOARDS:
             continue
         companies = sorted(load_companies(platform))
         if max_companies:
             companies = companies[:max_companies]
         if companies:
             work.append((platform, companies))
+    boards = [p for p in platforms if p in BOARDS]
 
     total = 0
-    with ThreadPoolExecutor(max_workers=max(len(work) + 1, 1)) as executor:
+    with ThreadPoolExecutor(max_workers=max(len(work) + len(boards), 1)) as executor:
         futures = [executor.submit(fetch_all_jobs, p, c, on_jobs) for p, c in work]
-        if "indeed" in platforms:
-            from .indeed import fetch_indeed
-            futures.append(executor.submit(fetch_indeed, indeed_cfg or {}, on_jobs))
+        futures += [executor.submit(fetch_board, b, (board_cfgs or {}).get(b), on_jobs)
+                    for b in boards]
         for future in as_completed(futures):
             total += future.result()
     return total
