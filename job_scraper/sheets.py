@@ -116,43 +116,70 @@ def build_new_rows(jobs, header, known_keys, known_idents, today_s):
 class WebAppClient:
     """Minimal client for the Apps Script endpoint. Every action is idempotent, so retries are safe."""
 
-    def __init__(self, url, token, sheet, retries=4):
+    def __init__(self, url, token, sheet, retries=8):
         if not url or not token:
             raise SystemExit("Set [sheets].webapp_url and [sheets].token "
                              "(or JOB_SCRAPER_WEBAPP_URL / JOB_SCRAPER_TOKEN).")
         self.url, self.token, self.sheet, self.retries = url, token, sheet, retries
 
+    def _post(self, body):
+        """POST the request and fetch its result, following redirects by hand.
+
+        Apps Script answers a POST with a 302 to a googleusercontent.com/macros/echo URL
+        holding the result. Left to requests, any redirect turns the POST into a GET, and
+        a GET that reaches the script runs doGet, losing the action. So: the echo URL is
+        fetched once, and any other redirect gets the POST again.
+
+        Google regularly loses the result: the echo URL answers 404, or redirects to some
+        other deployment's /exec, and fetching it again never recovers it. Those raise,
+        so call() re-sends the request (every action is safe to repeat)."""
+        resp = requests.post(self.url, json=body, timeout=360, allow_redirects=False)
+        for _ in range(5):
+            if not resp.is_redirect:
+                return resp
+            location = resp.headers["Location"]
+            if "/macros/echo" not in location:
+                resp = requests.post(location, json=body, timeout=360, allow_redirects=False)
+                continue
+            resp = requests.get(location, timeout=360, allow_redirects=False)
+            if resp.status_code == 404 or resp.is_redirect:
+                raise requests.HTTPError(f"Google lost the result (HTTP {resp.status_code})")
+            return resp
+        raise requests.HTTPError("too many redirects")
+
     def call(self, action, **params):
         body = {"token": self.token, "sheet": self.sheet, "action": action, **params}
         for attempt in range(self.retries + 1):
             try:
-                # Apps Script answers the POST with a 302 to the result; requests follows it as a GET.
-                resp = requests.post(self.url, json=body, timeout=360)
+                resp = self._post(body)
                 if resp.status_code in (429, 500, 502, 503, 504):
                     raise requests.HTTPError(f"HTTP {resp.status_code}")
                 resp.raise_for_status()
+                try:
+                    data = resp.json()
+                except ValueError:
+                    raise RuntimeError(
+                        "Web app returned non-JSON (check the URL ends in /exec and the "
+                        f"deployment's access is 'Anyone'): {resp.text[:200]!r}"
+                    )
+                if "service" in data:
+                    # doGet's health-check reply: the request reached the script as a GET.
+                    # Google's redirects occasionally do this; the call is safe to repeat.
+                    raise requests.HTTPError("request reached doGet instead of doPost")
             except requests.RequestException as e:
                 if attempt == self.retries:
+                    if "doGet" in str(e):
+                        raise RuntimeError(
+                            f"Web app {action} keeps reaching doGet instead of doPost; check "
+                            "the deployment runs the latest Code.gs (Deploy > Manage "
+                            "deployments > New version)") from e
                     raise
-                wait = 2 ** attempt * 5
+                wait = min(5 * 2 ** attempt, 30)
                 print(f"  web app {action} failed ({e}); retrying in {wait}s")
                 time.sleep(wait)
                 continue
-            try:
-                data = resp.json()
-            except ValueError:
-                raise RuntimeError(
-                    "Web app returned non-JSON (check the URL ends in /exec and the "
-                    f"deployment's access is 'Anyone'): {resp.text[:200]!r}"
-                )
             if not data.get("ok"):
                 raise RuntimeError(f"Web app {action} error: {data.get('error')}")
-            if "service" in data:
-                # doGet's health-check reply: the POST reached the script as a GET.
-                raise RuntimeError(
-                    f"Web app {action} hit doGet instead of doPost; redeploy the latest "
-                    f"Code.gs (Deploy > Manage deployments > New version): {resp.text[:200]!r}"
-                )
             return data
 
 

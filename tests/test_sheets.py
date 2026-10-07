@@ -7,7 +7,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from job_scraper.scrape import apply_filters, job_identity
-from job_scraper.sheets import COLUMNS, build_new_rows, plan_sync
+import json
+
+import requests
+
+from job_scraper import sheets
+from job_scraper.sheets import COLUMNS, WebAppClient, build_new_rows, plan_sync
 
 TODAY = date(2026, 9, 22)
 
@@ -106,6 +111,90 @@ def test_filters():
         "max_age_days": 30,
     })
     assert [j["key"] for j in kept] == ["1", "4"]
+
+
+class FakeResponse:
+    def __init__(self, status, location=None, body=None):
+        self.status_code, self.headers = status, ({"Location": location} if location else {})
+        self.is_redirect = status in (301, 302, 303, 307, 308)
+        self._body = body or {}
+        self.text = json.dumps(self._body)
+
+    def json(self):
+        return self._body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+
+def fake_google(monkey, script):
+    """Replace requests.post/get with responses from ``script`` (list of callables)."""
+    calls = []
+
+    def respond(method, url, **kw):
+        calls.append((method, url))
+        return script.pop(0)(method, url)
+
+    monkey["post"], monkey["get"], monkey["sleep"] = requests.post, requests.get, sheets.time.sleep
+    sheets.time.sleep = lambda s: None
+    requests.post = lambda url, **kw: respond("POST", url, **kw)
+    requests.get = lambda url, **kw: respond("GET", url, **kw)
+    return calls
+
+
+def restore(monkey):
+    requests.post, requests.get, sheets.time.sleep = monkey["post"], monkey["get"], monkey["sleep"]
+
+
+ECHO = "https://script.googleusercontent.com/macros/echo?user_content_key=x"
+OK = {"ok": True, "rows": []}
+
+
+def test_client_resends_when_google_loses_the_result():
+    monkey = {}
+    calls = fake_google(monkey, [
+        lambda m, u: FakeResponse(302, ECHO),
+        lambda m, u: FakeResponse(404),  # result lost
+        lambda m, u: FakeResponse(302, ECHO),
+        lambda m, u: FakeResponse(302, "https://script.google.com/macros/s/other/exec"),  # lost
+        lambda m, u: FakeResponse(302, ECHO),
+        lambda m, u: FakeResponse(200, body=OK),
+    ])
+    try:
+        assert WebAppClient("https://x/exec", "t", "Jobs").call("read_columns") == OK
+    finally:
+        restore(monkey)
+    # Never followed the echo's redirect as a GET to a script (that would run doGet).
+    assert [m for m, _ in calls] == ["POST", "GET", "POST", "GET", "POST", "GET"]
+
+
+def test_client_reposts_on_redirect_to_script_url():
+    monkey = {}
+    calls = fake_google(monkey, [
+        lambda m, u: FakeResponse(302, "https://script.google.com/macros/u/1/s/x/exec"),
+        lambda m, u: FakeResponse(302, ECHO),
+        lambda m, u: FakeResponse(200, body=OK),
+    ])
+    try:
+        WebAppClient("https://x/exec", "t", "Jobs").call("insert_rows", values=[])
+    finally:
+        restore(monkey)
+    assert [m for m, _ in calls] == ["POST", "POST", "GET"]  # never turned into a GET
+
+
+def test_client_retries_when_request_reaches_doget():
+    monkey = {}
+    fake_google(monkey, [
+        lambda m, u: FakeResponse(302, ECHO),
+        lambda m, u: FakeResponse(200, body={"ok": True, "service": "job-scraper"}),
+        lambda m, u: FakeResponse(302, ECHO),
+        lambda m, u: FakeResponse(200, body=OK),
+    ])
+    try:
+        assert WebAppClient("https://x/exec", "t", "Jobs").call("read_columns") == OK
+    finally:
+        restore(monkey)
 
 
 if __name__ == "__main__":
