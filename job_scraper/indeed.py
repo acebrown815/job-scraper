@@ -42,15 +42,51 @@ def _to_job(post, search_country_iso):
     return job
 
 
+def _jobspy():
+    try:
+        from jobspy.indeed import Indeed
+        from jobspy.model import Country, ScraperInput, Site
+        from jobspy.util import set_logger_level
+    except ImportError:
+        raise SystemExit("Indeed needs JobSpy: pip install -U python-jobspy")
+    return Indeed, Country, ScraperInput, Site, set_logger_level
+
+
+def _scraper_input(indeed_cfg, country, term):
+    _, _, ScraperInput, Site, _ = _jobspy()
+    params = dict(
+        search_term=term,
+        country=country,
+        is_remote=indeed_cfg.get("remote_only", True),
+        hours_old=indeed_cfg.get("hours_old", 48),
+        results_wanted=indeed_cfg.get("results_per_search", 1000),
+    )
+    if "site_type" in ScraperInput.model_fields:  # required before JobSpy 1.2.0
+        params["site_type"] = [Site.INDEED]
+    return ScraperInput(**params)
+
+
+def check_indeed(indeed_cfg):
+    """Fail fast, before scraping starts: JobSpy is installed, this version accepts our
+    search input, and every configured country name is valid."""
+    _, Country, _, _, _ = _jobspy()
+    countries = indeed_cfg.get("countries", DEFAULT_COUNTRIES)
+    for name in countries:
+        try:
+            Country.from_string(name)
+        except ValueError as e:
+            raise SystemExit(f"[indeed] countries: {e}")
+    try:
+        _scraper_input(indeed_cfg, Country.from_string(countries[0]), "test")
+    except Exception as e:
+        raise SystemExit(f"[indeed] this JobSpy version doesn't accept the search input "
+                         f"(try: pip install -U python-jobspy): {e}")
+
+
 def fetch_indeed(indeed_cfg, on_jobs):
     """Run every configured search, handing each search's jobs to ``on_jobs``.
     Returns the number of jobs fetched (before filtering)."""
-    try:
-        from jobspy.indeed import Indeed
-        from jobspy.model import Country, ScraperInput
-        from jobspy.util import set_logger_level
-    except ImportError:
-        raise SystemExit("Indeed needs JobSpy: pip install python-jobspy")
+    Indeed, Country, _, _, set_logger_level = _jobspy()
     set_logger_level(0)  # JobSpy logs every page at INFO; keep errors only
 
     countries = indeed_cfg.get("countries", DEFAULT_COUNTRIES)
@@ -61,13 +97,7 @@ def fetch_indeed(indeed_cfg, on_jobs):
 
     def search(country_name, term):
         country = Country.from_string(country_name)
-        result = Indeed().scrape(ScraperInput(
-            search_term=term,
-            country=country,
-            is_remote=indeed_cfg.get("remote_only", True),
-            hours_old=indeed_cfg.get("hours_old", 48),
-            results_wanted=indeed_cfg.get("results_per_search", 1000),
-        ))
+        result = Indeed().scrape(_scraper_input(indeed_cfg, country, term))
         iso = _iso_code(country, None)
         return [_to_job(post, iso) for post in result.jobs]
 

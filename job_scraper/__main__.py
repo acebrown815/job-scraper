@@ -43,6 +43,9 @@ def main():
 
     platforms = args.platforms or scrape_cfg.get("platforms") or sorted(FETCHERS)
     max_companies = args.max_companies or scrape_cfg.get("max_companies_per_platform")
+    if "indeed" in platforms:
+        from .indeed import check_indeed
+        check_indeed(config.get("indeed", {}))  # fail now, not an hour into the scrape
 
     base_filters = {**config.get("filters", {}), "roles": config.get("roles", [])}
     tabs = []
