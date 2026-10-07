@@ -29,7 +29,7 @@ def load_config(path):
 def main():
     parser = argparse.ArgumentParser(description="Scrape ATS job boards into Google Sheets")
     parser.add_argument("--config", default=os.path.join(ROOT_DIR, "config.toml"))
-    parser.add_argument("--platforms", nargs="+", choices=sorted(FETCHERS),
+    parser.add_argument("--platforms", nargs="+", choices=sorted(FETCHERS) + ["indeed"],
                         help="Override [scrape].platforms")
     parser.add_argument("--max-companies", type=int,
                         help="Only check the first N companies per platform (for testing)")
@@ -65,7 +65,8 @@ def main():
     streamer = Streamer(tabs, batch_size=sheets_cfg.get("batch_size", 100),
                         flush_seconds=sheets_cfg.get("flush_seconds", 60))
     started = time.time()
-    total = scrape(platforms, streamer.put, max_companies=max_companies)
+    total = scrape(platforms, streamer.put, max_companies=max_companies,
+                   indeed_cfg=config.get("indeed", {}))
     streamer.close()
     print(f"Scraped {total:,} jobs in {time.time() - started:.0f}s")
 

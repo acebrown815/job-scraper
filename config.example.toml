@@ -1,10 +1,33 @@
 # Copy to config.toml and edit.
 
 [scrape]
-# Any of: greenhouse, lever, ashby, bamboohr, workday, icims, paylocity
+# Any of: greenhouse, lever, ashby, bamboohr, workday, icims, paylocity, indeed
 # Scraping all seven takes hours (20k+ companies); greenhouse + lever + ashby is ~15 min.
-platforms = ["greenhouse", "lever", "ashby"]
+platforms = ["greenhouse", "lever", "ashby", "indeed"]
 # max_companies_per_platform = 100   # uncomment for quick test runs
+
+[indeed]
+# Indeed is searched, not crawled: one search per (country, term), each capped by Indeed at
+# ~1,000 results. Results go through the same [filters], roles and tabs as the ATS boards.
+# Needs: pip install python-jobspy
+# Country names as JobSpy spells them: "USA", "UK", "Czech Republic", ...
+countries = [
+  "USA",
+  "Austria", "Belgium", "Czech Republic", "Denmark", "Finland", "France", "Germany",
+  "Greece", "Hungary", "Ireland", "Italy", "Luxembourg", "Netherlands", "Norway", "Poland",
+  "Portugal", "Romania", "Spain", "Sweden", "Switzerland", "UK", "Ukraine",
+]
+# Indeed also matches descriptions, so keep terms specific; the role filters drop the rest.
+search_terms = [
+  "software engineer", "software developer", "full stack developer", "backend engineer",
+  "machine learning engineer", "AI engineer",
+  "data engineer",
+  "devops engineer", "site reliability engineer", "platform engineer",
+]
+remote_only = true           # Indeed's own remote filter (excludes hybrid)
+hours_old = 48               # only jobs added to Indeed in the last N hours
+results_per_search = 1000    # Indeed caps each search at about this many
+workers = 4                  # parallel searches
 
 [filters]
 # All filters are optional; leave a list empty to disable it.

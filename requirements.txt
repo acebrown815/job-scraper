@@ -1,1 +1,3 @@
 requests>=2.32
+# Only needed when "indeed" is in [scrape].platforms
+python-jobspy>=1.2.0
