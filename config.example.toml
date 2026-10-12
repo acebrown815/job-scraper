@@ -16,6 +16,8 @@ countries = [
   "Austria", "Belgium", "Czech Republic", "Denmark", "Finland", "France", "Germany",
   "Greece", "Hungary", "Ireland", "Italy", "Luxembourg", "Netherlands", "Norway", "Poland",
   "Portugal", "Romania", "Spain", "Sweden", "Switzerland", "UK", "Ukraine",
+  "Australia", "China", "Hong Kong", "Indonesia", "Japan", "Malaysia",
+  "New Zealand", "Philippines", "Singapore", "Taiwan", "Thailand",  "Vietnam",
 ]
 # Indeed also matches descriptions, so keep terms specific; the role filters drop the rest.
 search_terms = [
@@ -126,8 +128,10 @@ flush_seconds = 60           # ...or this often, while the scrape is running
 # max_rows), and picks one [[roles]] name with `role`. The scrape runs once; each tab is
 # filtered and synced separately. Remove these to write a single tab named by
 # [sheets].worksheet (it then gets every role).
-# Plain "Remote"/"Anywhere" jobs (no place named) go to both regions; set
-# keep_unplaced_remote = false on the EU tabs to keep only jobs naming a European place.
+# Plain "Remote"/"Anywhere" jobs (no place named) go to every region; set
+# keep_unplaced_remote = false on the EU and APAC tabs to keep only jobs naming a place
+# in that region. APAC = China, Japan, Hong Kong, Taiwan, Southeast Asia and
+# Australia/New Zealand; South Korea and South Asia (India, Pakistan, ...) are left out.
 [[sheets.tabs]]
 worksheet = "US - Software"
 countries = ["US"]
@@ -166,4 +170,24 @@ role = "Data"
 [[sheets.tabs]]
 worksheet = "EU - DevOps/SRE"
 countries = ["EU"]
+role = "DevOps/SRE"
+
+[[sheets.tabs]]
+worksheet = "APAC - Software"
+countries = ["CN", "JP", "HK", "TW", "Southeast Asia", "ANZ"]
+role = "Software"
+
+[[sheets.tabs]]
+worksheet = "APAC - ML/AI"
+countries = ["CN", "JP", "HK", "TW", "Southeast Asia", "ANZ"]
+role = "ML/AI"
+
+[[sheets.tabs]]
+worksheet = "APAC - Data"
+countries = ["CN", "JP", "HK", "TW", "Southeast Asia", "ANZ"]
+role = "Data"
+
+[[sheets.tabs]]
+worksheet = "APAC - DevOps/SRE"
+countries = ["CN", "JP", "HK", "TW", "Southeast Asia", "ANZ"]
 role = "DevOps/SRE"

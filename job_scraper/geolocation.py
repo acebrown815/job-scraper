@@ -368,6 +368,16 @@ FAMOUS_CITY_DEFAULTS = {
     "columbus": "US",
     "richmond": "US",
     "springfield": "US",
+    # Asia: often posted without a country ("Tokyo", "Bangalore")
+    "tokyo": "JP", "osaka": "JP",
+    "beijing": "CN", "shanghai": "CN", "shenzhen": "CN", "hangzhou": "CN",
+    "taipei": "TW",
+    "bengaluru": "IN", "mumbai": "IN", "pune": "IN", "chennai": "IN", "kolkata": "IN",
+    "gurgaon": "IN", "gurugram": "IN", "noida": "IN", "new delhi": "IN",
+    "bangkok": "TH", "jakarta": "ID", "kuala lumpur": "MY", "manila": "PH",
+    "ho chi minh city": "VN", "hanoi": "VN",
+    "karachi": "PK", "lahore": "PK", "islamabad": "PK",
+    "dhaka": "BD", "colombo": "LK", "kathmandu": "NP",
 }
 
 
@@ -375,7 +385,10 @@ _EUROPE = {"GB", "IE", "DE", "FR", "ES", "IT", "NL", "BE", "CH", "AT", "SE", "NO
            "FI", "PL", "PT", "CZ", "GR", "RO", "UA", "HU", "BG", "HR", "RS", "SK", "SI",
            "EE", "LV", "LT", "LU", "CY", "MT", "IS"}
 _LATAM = {"MX", "BR", "AR", "CL", "CO", "PE"}
-_APAC = {"IN", "CN", "JP", "KR", "SG", "MY", "PH", "ID", "TH", "VN", "HK", "TW", "AU", "NZ"}
+_EAST_ASIA = {"CN", "JP", "KR", "HK", "TW"}
+_SEA = {"SG", "MY", "PH", "ID", "TH", "VN"}
+_SOUTH_ASIA = {"IN", "PK", "BD", "LK", "NP"}
+_APAC = _EAST_ASIA | _SEA | _SOUTH_ASIA | {"AU", "NZ"}
 _MEA = {"IL", "AE", "SA", "TR", "ZA", "EG", "NG", "KE"}
 
 # Region name → countries it covers (limited to countries in COUNTRY_ALIASES).
@@ -386,6 +399,7 @@ REGION_COUNTRIES = {
     "europe": _EUROPE, "eu": _EUROPE, "european union": _EUROPE,
     "emea": _EUROPE | _MEA, "nordics": {"SE", "NO", "DK", "FI"}, "dach": {"DE", "AT", "CH"},
     "apac": _APAC, "asia": _APAC - {"AU", "NZ"}, "asia pacific": _APAC,
+    "east asia": _EAST_ASIA, "southeast asia": _SEA, "south asia": _SOUTH_ASIA,
     "anz": {"AU", "NZ"}, "oceania": {"AU", "NZ"},
     "middle east": _MEA - {"ZA", "NG", "KE"}, "africa": {"ZA", "EG", "NG", "KE"},
 }
@@ -544,6 +558,7 @@ def parse_job_location(location_str):
     joined = " ".join(tokens)
     if joined in CITY_ALIASES:
         result["city"] = CITY_ALIASES[joined]
+        result["country"] = FAMOUS_CITY_DEFAULTS.get(result["city"])
         return result
 
     # Handle "city state" space-separated patterns
@@ -584,6 +599,15 @@ def parse_job_location(location_str):
 
     if result["city"] and result["city"] in CITY_ALIASES:
         result["city"] = CITY_ALIASES[result["city"]]
+
+    # A well-known city alone ("Tokyo") gets its usual country. "Pune, IN" names India
+    # with its ISO code, not Indiana; "Paris, TX" stays in Texas.
+    default = FAMOUS_CITY_DEFAULTS.get(result["city"])
+    if default and (result["country"] is None or
+                    (result["country"] == "US" and (result["admin"] or "").upper() == default)):
+        result["country"] = default
+        if result["admin"] and result["admin"].upper() == default:
+            result["admin"] = None
 
     return result
 

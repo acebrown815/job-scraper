@@ -45,6 +45,31 @@ def test_eu_tab():
     assert not _in_countries(remote_job("Remote"), eu, keep_unplaced=False)
 
 
+def test_asia_tab():
+    asia = expand_countries(["Asia"])
+    for loc in ["Remote KR", "Remote - Asia", "Remote, APAC", "Remote (India)", "Remote - Tokyo",
+                "Singapore"]:
+        assert _in_countries(remote_job(loc), asia), loc
+    for loc in ["Remote (US)", "Remote - Europe", "Remote, Australia", "Sydney"]:
+        assert not _in_countries(remote_job(loc), asia), loc
+
+
+def test_apac_tab_without_korea_or_south_asia():
+    apac = expand_countries(["CN", "JP", "HK", "TW", "Southeast Asia", "ANZ"])
+    for loc in ["Remote, APAC", "Remote - Asia", "Remote - Tokyo", "Singapore", "Remote, Australia"]:
+        assert _in_countries(remote_job(loc), apac), loc
+    for loc in ["Remote KR", "Remote, South Korea", "Remote (India)", "Remote - Bangalore",
+                "Remote - South Asia"]:
+        assert not _in_countries(remote_job(loc), apac), loc
+
+
+def test_asian_city_countries():
+    assert parse_job_location("Tokyo")["country"] == "JP"
+    assert parse_job_location("Bangalore")["country"] == "IN"
+    assert parse_job_location("Pune, IN")["country"] == "IN"  # India, not Indiana
+    assert parse_job_location("Paris, TX")["country"] == "US"
+
+
 def test_remote_parse_keeps_single_country():
     assert parse_job_location("Remote, United States")["country"] == "US"
     assert parse_job_location("Remote (Ukraine)")["country"] == "UA"
